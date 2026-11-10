@@ -2,7 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+Every version published to npm has a matching `v` tag and GitHub release with these notes. See [Releasing](CONTRIBUTING.md#releasing).
+
 ## [Unreleased]
+
+## [0.3.0] - 2026-11-10
+
+The first npm release since 0.1.0. It also ships [0.2.0](#020---2026-11-10), which was tagged but never published to npm: the Claude Code plugin marketplace with the `whatsapp` plugin.
 
 ### Added
 
@@ -22,7 +28,9 @@ All notable changes to this project are documented here. The format follows [Kee
 - `launchd` is now `print` (the old name still works), and the plist runs `run --service`.
 - The build marks `dist/cli.js` executable, so `npm link` keeps working after a rebuild.
 
-## [0.2.0]
+## [0.2.0] - 2026-11-10
+
+Tagged, but not published to npm. Its changes ship in 0.3.0.
 
 ### Added
 
@@ -30,7 +38,7 @@ All notable changes to this project are documented here. The format follows [Kee
   any wacli command, confirming sends, account changes and deletions first, and a `wacli` skill with
   a reference of every wacli command.
 
-## [0.1.0]
+## [0.1.0] - 2026-11-10
 
 ### Added
 
@@ -41,3 +49,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Actions `notify`, `reply` and `update_instructions`, with a policy that turns unrequested replies into suggestions and only lets the owner change the instructions.
 - Daily limit on model calls.
 - `init`, `check`, `launchd` and a systemd unit.
+
+[Unreleased]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/rafaelp/agentic-whatsapp/releases/tag/v0.1.0
