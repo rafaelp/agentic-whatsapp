@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 
 - Claude Code plugin marketplace with the `whatsapp` plugin: a `/whatsapp [command]` skill that runs
