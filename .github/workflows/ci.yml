@@ -37,7 +37,7 @@ jobs:
       - name: Install the packed npm package globally
         run: |
           npm pack
-          npm install -g ./rafaelp-agentic-whatsapp-*.tgz
+          npm install -g ./rafaelp-aios-agentic-whatsapp-*.tgz
           agentic-whatsapp --version
           agentic-whatsapp help
       - name: init writes a config that check can read

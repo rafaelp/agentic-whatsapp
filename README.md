@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/rafaelp/agentic-whatsapp/actions/workflows/ci.yml"><img src="https://github.com/rafaelp/agentic-whatsapp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://www.npmjs.com/package/@rafaelp/agentic-whatsapp"><img src="https://img.shields.io/npm/v/@rafaelp/agentic-whatsapp?color=cb3837" alt="npm"></a>
+  <a href="https://www.npmjs.com/package/@rafaelp-aios/agentic-whatsapp"><img src="https://img.shields.io/npm/v/@rafaelp-aios/agentic-whatsapp?color=cb3837" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2f80ed" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/macOS%20%7C%20Linux-launchd%20%7C%20systemd-5b3fd9" alt="macOS with launchd, Linux with systemd">
   <img src="https://img.shields.io/badge/engine-Antigravity%20CLI-1a73e8" alt="Engine: Antigravity CLI">
@@ -103,7 +103,7 @@ brew install openclaw/tap/wacli                              # WhatsApp CLI (or 
 wacli auth                                                   # scan the QR code: Linked devices › Link a device
 curl -fsSL https://antigravity.google/cli/install.sh | bash  # Antigravity CLI, installed as ~/.local/bin/agy
 agy                                                          # first-run setup: sign in with Google, then exit
-npm install -g @rafaelp/agentic-whatsapp                     # the npm name is scoped; the command is agentic-whatsapp
+npm install -g @rafaelp-aios/agentic-whatsapp                # the npm name is scoped; the command is agentic-whatsapp
 agentic-whatsapp init --name Ane --language en               # pick your agent's name and language
 ```
 
