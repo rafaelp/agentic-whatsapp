@@ -72,6 +72,30 @@ log_keep = 5
 # macOS notifications from the background service when WhatsApp sync or the model
 # keeps failing, and when they recover.
 notify = true
+
+[costs]
+# Every model call is stored with its tokens and priced at Gemini API rates. On
+# Antigravity this is what the tokens would cost on the API; your plan is not billed.
+# See them with: agentic-whatsapp costs
+currency = "USD"
+# Prices per million tokens. Known models need none; set them for any other model.
+# input_per_million = 0.75
+# output_per_million = 3.75
+# cached_per_million = 0.075
+# Stop calling the model once a day, week (Monday to Sunday) or month has cost this
+# much, and tell you once in the home chat. 0 means no limit.
+max_per_day = 0
+max_per_week = 0
+max_per_month = 0
+# Warn once when a limit is this far used up. 0 never warns.
+warn_percent = 80
+
+[storage]
+# The database keeps every message, decision, model call and send. false keeps
+# names, IDs, tokens and costs, but no message text, prompts or answers.
+save_text = true
+# Delete those texts after this many days; tokens and costs stay. 0 keeps them.
+retention_days = 0
 `;
 }
 

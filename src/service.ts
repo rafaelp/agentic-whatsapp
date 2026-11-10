@@ -3,9 +3,10 @@ import { accessSync, constants, existsSync, mkdirSync, unlinkSync, writeFileSync
 import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, extname, join, resolve } from 'node:path';
 import type { Config } from './config.js';
+import { Store } from './db.js';
 import { Health, type HealthSnapshot } from './health.js';
-import { AgentState } from './state.js';
 import { dayKey, formatLocalTime } from './time.js';
+import { formatMoney, limitFor, PERIOD_NAMES, PERIODS, periodsOf, UsageLedger } from './usage.js';
 import { Wacli } from './wacli.js';
 
 export const LABEL = 'agentic-whatsapp';
@@ -238,7 +239,7 @@ export async function statusLines(config: Config, now: Date = new Date()): Promi
   const time = (iso: string | undefined) => (iso === undefined ? '-' : formatLocalTime(new Date(iso), zone));
   const launchd = launchdState();
   const health = await Health.read(config.paths.healthFile);
-  const state = await AgentState.load(join(config.paths.stateDir, 'state.json')).catch(() => null);
+  const usage = openLedger(config);
 
   let service: string;
   if (!launchd.installed && !launchd.loaded) service = 'not installed (agentic-whatsapp install)';
@@ -252,13 +253,34 @@ export async function statusLines(config: Config, now: Date = new Date()): Promi
   const lines = [
     `service   ${service}`,
     `agent     ${agentLine(health, time)}`,
-    `calls     ${state === null ? '-' : state.callsToday(dayKey(now, zone))} of ${config.engine.maxCallsPerDay} today`,
+    `calls     ${usage?.ledger.callsOn(dayKey(now, zone)) ?? 0} of ${config.engine.maxCallsPerDay} today`,
+    `cost      ${costLine(config, usage?.ledger, now)}`,
     `wacli     ${componentLine(health?.wacli, time)}`,
     `engine    ${componentLine(health?.engine, time)} (${config.engine.kind}, ${config.engine.model})`,
     `log       ${config.paths.agentLog}`,
   ];
+  if (usage !== undefined) lines.push(`database  ${config.paths.database}`);
   if (launchd.installed) lines.push(`plist     ${plistPath()}`);
+  usage?.store.close();
   return lines;
+}
+
+/** The ledger of an existing database; undefined before the agent first ran, so status never creates one. */
+export function openLedger(config: Config): { store: Store; ledger: UsageLedger } | undefined {
+  if (!existsSync(config.paths.database)) return undefined;
+  const store = Store.open(config.paths.database);
+  return { store, ledger: new UsageLedger(store, config.engine, config.costs, config.agent.timezone) };
+}
+
+/** "$0.0867 today · $0.58 this week · $1.52 this month", with the limits that are set. */
+export function costLine(config: Config, ledger: UsageLedger | undefined, now: Date): string {
+  const money = (amount: number) => formatMoney(amount, config.costs.currency);
+  const periods = periodsOf(now, config.agent.timezone);
+  return PERIODS.map((period) => {
+    const spent = ledger?.spent(period, periods[period]) ?? 0;
+    const limit = limitFor(config.costs, period);
+    return `${money(spent)}${limit > 0 ? ` of ${money(limit)}` : ''} ${PERIOD_NAMES[period].current}`;
+  }).join(' · ');
 }
 
 function agentLine(health: HealthSnapshot | null, time: (iso: string | undefined) => string): string {

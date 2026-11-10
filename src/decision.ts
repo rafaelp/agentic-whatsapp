@@ -1,9 +1,33 @@
+import type { ToolSet } from './tools.js';
 import type { Action, Decision } from './types.js';
+import type { Usage } from './usage.js';
 import { errorMessage, isRecord } from './util.js';
+
+/** One run of the engine. A decision can take two, when the first one is discarded. */
+export interface Attempt {
+  attempt: number;
+  startedAt: Date;
+  durationMs: number;
+  /** `tool`: discarded because the model used a tool it may not use. */
+  status: 'ok' | 'failed' | 'tool';
+  error?: string;
+  usage: Usage;
+  /** Tools the model started, such as "notes/search" for an MCP tool. */
+  tools: string[];
+  conversationId?: string;
+  response?: string;
+}
+
+export interface DecideOptions {
+  /** Skills and MCP tools this call may use. Without them, the model may use no tool at all. */
+  tools?: ToolSet;
+  /** Called after every attempt, successful or not, with its tokens. */
+  onAttempt?: (attempt: Attempt) => void;
+}
 
 /** Anything that turns a prompt into a decision: Antigravity CLI, Gemini CLI, or a test fake. */
 export interface DecisionMaker {
-  decide(prompt: string): Promise<Decision>;
+  decide(prompt: string, options?: DecideOptions): Promise<Decision>;
 }
 
 const MAX_ACTIONS = 5;
@@ -48,6 +72,11 @@ export function decisionFromValue(value: unknown): Decision {
   if (!isRecord(value) || !Array.isArray(value.actions)) {
     throw new Error('The model answered without an "actions" list');
   }
+  const nested = nestedDecision(value.actions);
+  if (nested !== undefined) {
+    const decision = decisionFromValue(nested);
+    return { ...decision, warnings: ['unwrapped a decision written inside an action', ...decision.warnings] };
+  }
 
   const actions: Action[] = [];
   const warnings: string[] = [];
@@ -73,6 +102,26 @@ export function decisionFromValue(value: unknown): Decision {
     }
   }
   return { actions, warnings };
+}
+
+/**
+ * After using tools, the model sometimes writes its whole answer as the text of a single
+ * action: {"actions": [{"type": "reply", "content": "{\"actions\": [...]}"}]}. That inner
+ * object is the decision it meant; it is validated like any other.
+ */
+function nestedDecision(actions: unknown[]): Record<string, unknown> | undefined {
+  const [only] = actions;
+  if (actions.length !== 1 || !isRecord(only)) return undefined;
+  for (const field of [only.text, only.content]) {
+    if (typeof field !== 'string' || !field.trim().startsWith('{')) continue;
+    try {
+      const inner: unknown = JSON.parse(field);
+      if (isRecord(inner) && Array.isArray(inner.actions) && nestedDecision(inner.actions) === undefined) return inner;
+    } catch {
+      // Ordinary text that happens to start with "{".
+    }
+  }
+  return undefined;
 }
 
 /** The outermost {...} in a text. */

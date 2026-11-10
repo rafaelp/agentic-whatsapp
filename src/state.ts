@@ -1,105 +1,114 @@
-import { mkdir, readFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { isNotFound, isRecord, writeFileAtomic } from './util.js';
+import { readFile, rename } from 'node:fs/promises';
+import type { Store } from './db.js';
+import type { Route } from './router.js';
+import type { Batch, ChatMessage, Decision } from './types.js';
+import { isNotFound, isRecord } from './util.js';
 
-const SEEN_LIMIT = 5_000;
-const SENT_LIMIT = 1_000;
 const OUTGOING_TTL_MS = 10 * 60_000;
-const SAVE_DELAY_MS = 1_000;
 
-interface Usage {
-  day: string;
-  calls: number;
-  capNotified: boolean;
-}
+export type BatchStatus = 'pending' | 'decided' | 'failed' | 'skipped';
+export type SentStatus = 'sent' | 'failed' | 'dry_run' | 'logged';
 
-interface StateFile {
-  version: 1;
-  seen: string[];
-  agentSent: string[];
-  usage: Usage;
-}
-
-/** Insertion-ordered set that forgets its oldest entries past `limit`. */
-class BoundedSet {
-  private readonly items: Set<string>;
-
-  constructor(
-    private readonly limit: number,
-    initial: Iterable<string> = [],
-  ) {
-    this.items = new Set(initial);
-    this.trim();
-  }
-
-  has(item: string): boolean {
-    return this.items.has(item);
-  }
-
-  add(item: string): void {
-    this.items.delete(item);
-    this.items.add(item);
-    this.trim();
-  }
-
-  values(): string[] {
-    return [...this.items];
-  }
-
-  private trim(): void {
-    for (const item of this.items) {
-      if (this.items.size <= this.limit) break;
-      this.items.delete(item);
-    }
-  }
+export interface SentRecord {
+  batchId?: number;
+  chat: string;
+  purpose: string;
+  status: SentStatus;
+  messageId?: string;
+  text: string;
+  error?: string;
 }
 
 /**
- * Small persistent state: which messages were already handled, which ones the agent
- * sent itself, and how many model calls were made today.
+ * What the agent remembers, in the database: every message it was given (so each one is
+ * handled once), every batch and its decision, everything it sent (so it never answers
+ * itself), and one-time notices such as "daily limit reached".
  */
 export class AgentState {
-  private readonly seen: BoundedSet;
-  private readonly agentSent: BoundedSet;
-  private usage: Usage;
   private readonly outgoing = new Map<string, number>();
-  private saveTimer: ReturnType<typeof setTimeout> | undefined;
 
-  private constructor(
-    private readonly file: string | null,
-    data: StateFile,
-  ) {
-    this.seen = new BoundedSet(SEEN_LIMIT, data.seen);
-    this.agentSent = new BoundedSet(SENT_LIMIT, data.agentSent);
-    this.usage = data.usage;
+  constructor(
+    readonly store: Store,
+    private readonly options: { saveText: boolean } = { saveText: true },
+  ) {}
+
+  /** Stores a message the first time it is seen, with what routing made of it; false for a duplicate. */
+  recordMessage(message: ChatMessage, route: Route, receivedAt: Date = new Date()): boolean {
+    const { changes } = this.store.run(
+      `INSERT INTO messages (chat, id, chat_name, sender, sender_name, from_me, forwarded, media, text, sent_at, received_at,
+        route, kind, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat, id) DO NOTHING`,
+      message.chat,
+      message.id,
+      message.chatName,
+      message.sender,
+      message.senderName,
+      message.fromMe,
+      message.forwarded,
+      message.mediaType,
+      this.options.saveText ? message.text : undefined,
+      message.timestamp.toISOString(),
+      receivedAt.toISOString(),
+      route.process ? 'queued' : 'skipped',
+      route.process ? route.kind : undefined,
+      route.process ? undefined : route.reason,
+    );
+    return changes > 0;
   }
 
-  /** Loads the state from `file`, or keeps it in memory only when `file` is null. */
-  static async load(file: string | null): Promise<AgentState> {
-    if (file === null) return new AgentState(null, emptyState());
-    try {
-      return new AgentState(file, parseState(JSON.parse(await readFile(file, 'utf8'))));
-    } catch (error) {
-      if (isNotFound(error)) return new AgentState(file, emptyState());
-      throw new Error(`Could not read the state file ${file}: ${String(error)}`);
-    }
+  /** Records a batch about to be decided and links its messages to it. */
+  startBatch(batch: Batch, invoked: boolean, at: Date = new Date()): number {
+    return this.store.transaction(() => {
+      const { id } = this.store.run(
+        'INSERT INTO batches (chat, chat_name, created_at, messages, invoked, status) VALUES (?, ?, ?, ?, ?, ?)',
+        batch.chat,
+        batch.chatName,
+        at.toISOString(),
+        batch.messages.length,
+        invoked,
+        'pending',
+      );
+      for (const message of batch.messages) {
+        this.store.run('UPDATE messages SET batch_id = ? WHERE chat = ? AND id = ?', id, message.chat, message.id);
+      }
+      return id;
+    });
   }
 
-  /** Records a message; returns false when it was already seen. */
-  markSeen(key: string): boolean {
-    if (this.seen.has(key)) return false;
-    this.seen.add(key);
-    this.scheduleSave();
-    return true;
+  finishBatch(
+    id: number,
+    outcome: { status: BatchStatus; error?: string; decision?: Decision },
+    at: Date = new Date(),
+  ): void {
+    const actions = outcome.decision?.actions.map((action) => (this.options.saveText ? action : { type: action.type }));
+    this.store.run(
+      'UPDATE batches SET status = ?, error = ?, actions = ?, warnings = ?, finished_at = ? WHERE id = ?',
+      outcome.status,
+      outcome.error,
+      actions === undefined ? undefined : JSON.stringify(actions),
+      outcome.decision === undefined || outcome.decision.warnings.length === 0 ? undefined : JSON.stringify(outcome.decision.warnings),
+      at.toISOString(),
+      id,
+    );
   }
 
-  markAgentSent(id: string): void {
-    this.agentSent.add(id);
-    this.scheduleSave();
+  recordSent(record: SentRecord, at: Date = new Date()): void {
+    this.store.run(
+      'INSERT INTO sent (batch_id, at, chat, purpose, status, message_id, text, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      record.batchId,
+      at.toISOString(),
+      record.chat,
+      record.purpose,
+      record.status,
+      record.messageId,
+      this.options.saveText ? record.text : undefined,
+      record.error,
+    );
   }
 
+  /** Whether the agent sent the WhatsApp message with this ID. */
   isAgentSent(id: string): boolean {
-    return this.agentSent.has(id);
+    return this.store.get('SELECT 1 AS found FROM sent WHERE message_id = ? LIMIT 1', id) !== undefined;
   }
 
   /**
@@ -118,76 +127,80 @@ export class AgentState {
     return at !== undefined && now - at <= OUTGOING_TTL_MS;
   }
 
-  /** Counts one model call for `day`; returns false once `max` calls were made that day. */
-  tryConsumeCall(day: string, max: number): boolean {
-    if (this.usage.day !== day) this.usage = { day, calls: 0, capNotified: false };
-    if (this.usage.calls >= max) return false;
-    this.usage.calls += 1;
-    this.scheduleSave();
-    return true;
+  /** Returns true the first time it is called for `key`, such as "calls:2026-11-10". */
+  markNotice(key: string, at: Date = new Date()): boolean {
+    return this.store.run('INSERT INTO notices (key, at) VALUES (?, ?) ON CONFLICT (key) DO NOTHING', key, at.toISOString()).changes > 0;
   }
 
-  /** Returns true the first time it is called on a day the limit was hit. */
-  markCapNotified(day: string): boolean {
-    if (this.usage.day !== day || this.usage.capNotified) return false;
-    this.usage.capNotified = true;
-    this.scheduleSave();
-    return true;
+  /**
+   * Deletes message text, prompts, answers and sent text older than `before`. IDs, names,
+   * decisions, tokens and costs stay, so duplicates are still recognized and costs still add up.
+   */
+  pruneText(before: Date): number {
+    const cutoff = before.toISOString();
+    return this.store.transaction(
+      () =>
+        this.store.run('UPDATE messages SET text = NULL WHERE received_at < ? AND text IS NOT NULL', cutoff).changes +
+        this.store.run(
+          'UPDATE calls SET prompt = NULL, response = NULL WHERE started_at < ? AND (prompt IS NOT NULL OR response IS NOT NULL)',
+          cutoff,
+        ).changes +
+        this.store.run('UPDATE sent SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
+        this.store.run(
+          `UPDATE batches SET actions = (SELECT json_group_array(json_object('type', json_extract(value, '$.type')))
+             FROM json_each(batches.actions))
+           WHERE created_at < ? AND (actions LIKE '%"text"%' OR actions LIKE '%"content"%')`,
+          cutoff,
+        ).changes,
+    );
   }
 
-  callsToday(day: string): number {
-    return this.usage.day === day ? this.usage.calls : 0;
-  }
-
-  async save(): Promise<void> {
-    if (this.saveTimer !== undefined) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = undefined;
+  /**
+   * Imports the state.json of agentic-whatsapp 0.3 and earlier: the messages it handled and
+   * the IDs it sent, so none of them is processed again. The file is then renamed.
+   */
+  async importLegacy(file: string, at: Date = new Date()): Promise<number> {
+    let value: unknown;
+    try {
+      value = JSON.parse(await readFile(file, 'utf8'));
+    } catch (error) {
+      if (isNotFound(error)) return 0;
+      throw new Error(`Could not read the state file ${file}: ${String(error)}`);
     }
-    if (this.file === null) return;
-    const data: StateFile = {
-      version: 1,
-      seen: this.seen.values(),
-      agentSent: this.agentSent.values(),
-      usage: this.usage,
-    };
-    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
-    await writeFileAtomic(this.file, `${JSON.stringify(data)}\n`);
-  }
-
-  private scheduleSave(): void {
-    if (this.file === null || this.saveTimer !== undefined) return;
-    this.saveTimer = setTimeout(() => {
-      this.saveTimer = undefined;
-      this.save().catch((error: unknown) => {
-        process.stderr.write(`agentic-whatsapp: could not save state: ${String(error)}\n`);
-      });
-    }, SAVE_DELAY_MS);
-    this.saveTimer.unref();
+    const strings = (items: unknown): string[] =>
+      Array.isArray(items) ? items.filter((item): item is string => typeof item === 'string') : [];
+    const seen = isRecord(value) ? strings(value.seen) : [];
+    const sent = isRecord(value) ? strings(value.agentSent) : [];
+    const stamp = at.toISOString();
+    let imported = 0;
+    this.store.transaction(() => {
+      for (const key of seen) {
+        const slash = key.indexOf('/');
+        if (slash <= 0) continue;
+        imported += this.store.run(
+          `INSERT INTO messages (chat, id, sent_at, received_at, route) VALUES (?, ?, ?, ?, 'imported')
+           ON CONFLICT (chat, id) DO NOTHING`,
+          key.slice(0, slash),
+          key.slice(slash + 1),
+          stamp,
+          stamp,
+        ).changes;
+      }
+      for (const id of sent) {
+        if (this.isAgentSent(id)) continue;
+        this.store.run(
+          `INSERT INTO sent (at, chat, purpose, status, message_id) VALUES (?, '', 'imported', 'sent', ?)`,
+          stamp,
+          id,
+        );
+        imported += 1;
+      }
+    });
+    await rename(file, `${file}.imported`);
+    return imported;
   }
 }
 
 function outgoingKey(chat: string, text: string): string {
   return `${chat}\n${text.trim()}`;
-}
-
-function emptyState(): StateFile {
-  return { version: 1, seen: [], agentSent: [], usage: { day: '', calls: 0, capNotified: false } };
-}
-
-function parseState(value: unknown): StateFile {
-  const state = emptyState();
-  if (!isRecord(value)) return state;
-  const strings = (items: unknown): string[] =>
-    Array.isArray(items) ? items.filter((item): item is string => typeof item === 'string') : [];
-  state.seen = strings(value.seen);
-  state.agentSent = strings(value.agentSent);
-  if (isRecord(value.usage)) {
-    state.usage = {
-      day: typeof value.usage.day === 'string' ? value.usage.day : '',
-      calls: typeof value.usage.calls === 'number' ? value.usage.calls : 0,
-      capNotified: value.usage.capNotified === true,
-    };
-  }
-  return state;
 }

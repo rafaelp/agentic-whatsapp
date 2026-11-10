@@ -2,8 +2,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type ActionContext, defuseMention, executePlan, formatOutgoing, planActions } from '../src/actions.js';
 import { InstructionsStore } from '../src/instructions.js';
-import { AgentState } from '../src/state.js';
-import { BOB, FakeWacli, HOME, MemoryLogger, tempDir } from './helpers.js';
+import { BOB, FakeWacli, HOME, MemoryLogger, memoryStore, tempDir } from './helpers.js';
 
 const context = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   chat: BOB,
@@ -58,7 +57,7 @@ describe('executePlan', () => {
   const runtime = async (overrides: { dryRun?: boolean } = {}) => {
     const dir = await tempDir();
     const wacli = new FakeWacli();
-    const state = await AgentState.load(null);
+    const { state } = memoryStore();
     const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
     const log = new MemoryLogger();
     return {
@@ -72,10 +71,13 @@ describe('executePlan', () => {
 
   it('sends with the prefix and remembers what it sent', async () => {
     const { wacli, state, run } = await runtime();
-    await executePlan([{ kind: 'send', to: HOME, text: 'resumo', purpose: 'notify' }], run);
+    await executePlan([{ kind: 'send', to: HOME, text: 'resumo', purpose: 'notify' }], { ...run, batchId: 7 });
     expect(wacli.sent).toEqual([{ to: HOME, text: '🤖 Ane: resumo' }]);
     expect(state.isAgentSent('SENT1')).toBe(true);
     expect(state.isRecentOutgoing(HOME, '🤖 Ane: resumo')).toBe(true);
+    expect(state.store.all('SELECT batch_id, chat, purpose, status, message_id, text FROM sent')).toEqual([
+      { batch_id: 7, chat: HOME, purpose: 'notify', status: 'sent', message_id: 'SENT1', text: '🤖 Ane: resumo' },
+    ]);
   });
 
   it('writes instructions', async () => {
@@ -96,12 +98,14 @@ describe('executePlan', () => {
     expect(wacli.sent).toEqual([]);
     expect(await instructions.read()).toBe('');
     expect(log.has('info', 'dry run: would send')).toBe(true);
+    expect(run.state.store.get('SELECT status FROM sent')).toEqual({ status: 'dry_run' });
   });
 
   it('logs a failed send and carries on', async () => {
-    const { wacli, log, run } = await runtime();
+    const { wacli, state, log, run } = await runtime();
     wacli.failSends = true;
     await executePlan([{ kind: 'send', to: HOME, text: 'a', purpose: 'notify' }], run);
     expect(log.has('error', 'send failed')).toBe(true);
+    expect(state.store.get('SELECT status, error FROM sent')).toEqual({ status: 'failed', error: 'send failed' });
   });
 });

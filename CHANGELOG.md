@@ -6,6 +6,35 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 
 ## [Unreleased]
 
+### Added
+
+- A SQLite database (`agentic-whatsapp.db` in the state folder), on the SQLite built into Node: every
+  message the agent was given, every batch and its decision, every model call with its tokens, cost,
+  tools, prompt and answer, and everything it sent. `[storage] save_text = false` keeps no text, and
+  `retention_days` deletes old texts while keeping tokens and costs.
+- Cost tracking: each run of the engine records its input, output, cached and thinking tokens and
+  its cost, priced at Gemini API rates (Gemini 3.8 Flash built in, others set in `[costs]`).
+  `agentic-whatsapp costs` sums today, this week, this month and all time, and breaks the last days
+  down by day, chat or model (`--days`, `--by`, `--json`). `status` shows the cost, and the log and
+  `stream` show the tokens and cost of every decision.
+- Cost limits per day, week and month (`[costs] max_per_day`, `max_per_week`, `max_per_month`): the
+  model is not called once one is reached, and you are told once, plus a warning at `warn_percent`.
+- Skills and MCP servers for Antigravity, managed with `agentic-whatsapp skills` and
+  `agentic-whatsapp mcp` (`list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove`).
+  They run in a workspace of their own, only the tools you allow can be used, by default only on
+  your own commands, and changes apply without a restart. `stream` shows the tools each call used.
+- `check` reports the prices, the cost limits, the enabled skills and MCP servers, and the database.
+
+### Changed
+
+- The state moved from `state.json` to the database. The first start imports it and renames it to
+  `state.json.imported`.
+- `engine.max_calls_per_day` counts every run of the engine, including the second attempt after a
+  discarded answer.
+- Node.js 22.13 or later is required, for its built-in SQLite.
+- An answer whose whole decision is written inside a single action, which the model sometimes does
+  after using tools, is unwrapped instead of dropped.
+
 ## [0.3.1] - 2026-11-10
 
 ### Fixed

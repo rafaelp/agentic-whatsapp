@@ -49,6 +49,20 @@ describe('StreamRenderer', () => {
     );
   });
 
+  it('shows the tokens and cost of a decision, the tools a call used and cost limits', async () => {
+    const r = renderer();
+    expect(await r.render(entry('decision', { chat: BOB, actions: ['notify'], inputTokens: 9_400, outputTokens: 42, cost: 0.0072 }))).toBe(
+      `12:00:00  🧠 ${BOB.split('@')[0]}: notify · 9.4k → 42 tokens · $0.0072`,
+    );
+    const call = entry('model call', { chat: BOB, status: 'ok', tools: ['notes/search'], cost: 0.01 });
+    expect(r.wants(call)).toBe(true);
+    expect(r.wants(entry('model call', { chat: BOB, status: 'ok' }))).toBe(false);
+    expect(await r.render(call)).toBe(`12:00:00  🔧 ${BOB.split('@')[0]}: notes/search`);
+    expect(await r.render(entry('cost limit reached, skipping', { chat: BOB, period: 'day', spent: 1.02, limit: 1 }, 'warn'))).toBe(
+      `12:00:00  ⚠ day cost limit reached ($1.02 of $1.00), skipped ${BOB.split('@')[0]}`,
+    );
+  });
+
   it('keeps message text off the screen with --no-text', async () => {
     const r = renderer({ text: false });
     expect(await r.render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob', media: 'image' }))).toBe(

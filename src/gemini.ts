@@ -1,9 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { EngineConfig } from './config.js';
-import { type DecisionMaker, extractJsonObject, parseDecision } from './decision.js';
-import { runProcess } from './process.js';
+import { type DecideOptions, type DecisionMaker, extractJsonObject, parseDecision } from './decision.js';
+import { type RunResult, runProcess } from './process.js';
 import type { Decision } from './types.js';
+import { NO_USAGE, type Usage } from './usage.js';
 import { errorMessage, isRecord, lastLines } from './util.js';
 
 const FINAL_PROMPT = 'Answer with the JSON decision for the input above.';
@@ -66,20 +67,38 @@ export class GeminiCli implements DecisionMaker {
     ];
   }
 
-  async decide(prompt: string): Promise<Decision> {
-    let result;
+  /** Skills and MCP servers are not supported here: Gemini CLI always runs with every tool denied. */
+  async decide(prompt: string, options: DecideOptions = {}): Promise<Decision> {
+    const startedAt = new Date();
+    let result: RunResult | undefined;
+    let failure: unknown;
     try {
-      result = await runProcess(this.config.command, this.args(), {
-        input: prompt,
-        timeoutMs: this.config.timeoutSeconds * 1000,
-        cwd: this.workspace,
-        env: { ...process.env, GEMINI_SYSTEM_MD: this.systemFile },
-      });
+      try {
+        result = await runProcess(this.config.command, this.args(), {
+          input: prompt,
+          timeoutMs: this.config.timeoutSeconds * 1000,
+          cwd: this.workspace,
+          env: { ...process.env, GEMINI_SYSTEM_MD: this.systemFile },
+        });
+      } catch (error) {
+        throw new Error(`Could not start ${this.config.command}: ${errorMessage(error)}`);
+      }
+      if (result.timedOut) throw new Error(`Gemini did not answer within ${this.config.timeoutSeconds}s`);
+      return parseDecision(parseCliOutput(result.stdout, result.stderr, result.code));
     } catch (error) {
-      throw new Error(`Could not start ${this.config.command}: ${errorMessage(error)}`);
+      failure = error;
+      throw error;
+    } finally {
+      options.onAttempt?.({
+        attempt: 1,
+        startedAt,
+        durationMs: Date.now() - startedAt.getTime(),
+        status: failure === undefined ? 'ok' : 'failed',
+        error: failure === undefined ? undefined : errorMessage(failure),
+        usage: result === undefined ? NO_USAGE : parseCliUsage(result.stdout),
+        tools: [],
+      });
     }
-    if (result.timedOut) throw new Error(`Gemini did not answer within ${this.config.timeoutSeconds}s`);
-    return parseDecision(parseCliOutput(result.stdout, result.stderr, result.code));
   }
 }
 
@@ -103,4 +122,33 @@ export function parseCliOutput(stdout: string, stderr: string, code: number | nu
   }
   const detail = lastLines(stderr) || lastLines(stdout) || 'no output';
   throw new Error(`Gemini exited with code ${String(code)}: ${detail}`);
+}
+
+/**
+ * Tokens from the `stats` of `gemini --output-format json`, summed over the models it used.
+ * Gemini counts thoughts apart from the answer; here they are part of the output, as with agy.
+ */
+export function parseCliUsage(stdout: string): Usage {
+  const json = extractJsonObject(stdout);
+  let output: unknown;
+  try {
+    output = json === null ? undefined : JSON.parse(json);
+  } catch {
+    return NO_USAGE;
+  }
+  if (!isRecord(output) || !isRecord(output.stats) || !isRecord(output.stats.models)) return NO_USAGE;
+  const usage = { ...NO_USAGE };
+  for (const model of Object.values(output.stats.models)) {
+    if (!isRecord(model) || !isRecord(model.tokens)) continue;
+    const tokens = model.tokens;
+    const count = (key: string): number => {
+      const value = tokens[key];
+      return typeof value === 'number' ? value : 0;
+    };
+    usage.inputTokens += count('prompt');
+    usage.outputTokens += count('candidates') + count('thoughts');
+    usage.thinkingTokens += count('thoughts');
+    usage.cachedTokens += count('cached');
+  }
+  return usage;
 }

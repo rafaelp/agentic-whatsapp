@@ -10,7 +10,7 @@ Thanks for helping. Bug reports, fixes and ideas are all welcome.
 
 ## Development
 
-You need Node.js 22.12 or newer.
+You need Node.js 22.13 or newer, for its built-in SQLite.
 
 ```sh
 npm install

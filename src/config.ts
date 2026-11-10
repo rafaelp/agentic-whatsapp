@@ -53,11 +53,37 @@ export interface ServiceConfig {
   notify: boolean;
 }
 
+export interface CostsConfig {
+  /** Label of the currency the prices are in. */
+  currency: string;
+  /** Prices per million tokens; unset ones come from the known prices of the model. */
+  inputPerMillion?: number;
+  outputPerMillion?: number;
+  cachedPerMillion?: number;
+  /** 0: no limit. */
+  maxPerDay: number;
+  maxPerWeek: number;
+  maxPerMonth: number;
+  /** Tell the owner once a limit is this far used up. 0: never. */
+  warnPercent: number;
+}
+
+export interface StorageConfig {
+  /** Keep message text, prompts, answers and sent text in the database. */
+  saveText: boolean;
+  /** Delete those texts after this many days; tokens and costs stay. 0: keep them. */
+  retentionDays: number;
+}
+
 export interface Paths {
   configFile: string;
   instructionsFile: string;
   stateDir: string;
   healthFile: string;
+  /** SQLite database with messages, decisions, calls and costs, skills and MCP servers. */
+  database: string;
+  /** Installed copies of the skills. */
+  skillsDir: string;
   logDir: string;
   /** Everything the agent logs, rotated by size. */
   agentLog: string;
@@ -71,6 +97,8 @@ export interface Config {
   engine: EngineConfig;
   wacli: WacliConfig;
   service: ServiceConfig;
+  costs: CostsConfig;
+  storage: StorageConfig;
   paths: Paths;
 }
 
@@ -219,6 +247,26 @@ export function parseConfig(
     notify: serviceSection.boolean('notify', true),
   };
   serviceSection.finish();
+
+  const costsSection = root.section('costs');
+  const costs: CostsConfig = {
+    currency: costsSection.string('currency', 'USD').trim() || 'USD',
+    inputPerMillion: costsSection.optionalNumber('input_per_million', 0, 1_000),
+    outputPerMillion: costsSection.optionalNumber('output_per_million', 0, 1_000),
+    cachedPerMillion: costsSection.optionalNumber('cached_per_million', 0, 1_000),
+    maxPerDay: costsSection.optionalNumber('max_per_day', 0, 1_000_000) ?? 0,
+    maxPerWeek: costsSection.optionalNumber('max_per_week', 0, 1_000_000) ?? 0,
+    maxPerMonth: costsSection.optionalNumber('max_per_month', 0, 1_000_000) ?? 0,
+    warnPercent: costsSection.integer('warn_percent', 80, 0, 99),
+  };
+  costsSection.finish();
+
+  const storageSection = root.section('storage');
+  const storage: StorageConfig = {
+    saveText: storageSection.boolean('save_text', true),
+    retentionDays: storageSection.integer('retention_days', 0, 0, 36_500),
+  };
+  storageSection.finish();
   root.finish();
 
   const logDir = location.logDir ?? join(location.stateDir, 'logs');
@@ -228,11 +276,15 @@ export function parseConfig(
     engine,
     wacli,
     service,
+    costs,
+    storage,
     paths: {
       configFile: location.configFile,
       instructionsFile: join(dirname(location.configFile), 'instructions.md'),
       stateDir: location.stateDir,
       healthFile: join(location.stateDir, 'health.json'),
+      database: join(location.stateDir, 'agentic-whatsapp.db'),
+      skillsDir: join(location.stateDir, 'skills'),
       logDir,
       agentLog: join(logDir, 'agent.log'),
       launchdLog: join(logDir, 'launchd.log'),
@@ -286,6 +338,16 @@ class Section {
     if (value === undefined) return fallback;
     if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
       throw new ConfigError(`${this.label(key)} must be a whole number from ${min} to ${max}`);
+    }
+    return value;
+  }
+
+  /** A number, whole or not, or undefined when the key is absent. */
+  optionalNumber(key: string, min: number, max: number): number | undefined {
+    const value = this.read(key);
+    if (value === undefined) return undefined;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      throw new ConfigError(`${this.label(key)} must be a number from ${min} to ${max}`);
     }
     return value;
   }

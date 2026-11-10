@@ -17,7 +17,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2f80ed" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/macOS%20%7C%20Linux-launchd%20%7C%20systemd-5b3fd9" alt="macOS with launchd, Linux with systemd">
   <img src="https://img.shields.io/badge/engine-Antigravity%20CLI-1a73e8" alt="Engine: Antigravity CLI">
-  <img src="https://img.shields.io/badge/node-%E2%89%A522.12-417e38" alt="Node 22.12 or later">
+  <img src="https://img.shields.io/badge/node-%E2%89%A522.13-417e38" alt="Node 22.13 or later">
   <img src="https://img.shields.io/badge/runtime%20deps-1-59636e" alt="One runtime dependency">
 </p>
 
@@ -39,7 +39,10 @@ help in a conversation, you call it like a person: `@ane`.
 - **You teach it in plain language.** "@ane from now on, tell me about every invoice" becomes a rule,
   saved in a file you can read and edit.
 - **No API key, no token bill.** It runs on [Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli)
-  with the Google account you already have, in about ten seconds per decision.
+  with the Google account you already have, in about ten seconds per decision. It still counts every
+  token, so you know what each decision would cost on the API, and can cap it.
+- **It can do things, if you let it.** Give it [skills](#skills-and-mcp-servers) and MCP servers, such as
+  your notes or your calendar, and it uses them when you ask. Nothing is on until you turn it on.
 - **WhatsApp inside Claude Code, too.** The `whatsapp` plugin adds a `/whatsapp` command that runs
   any wacli command, and teaches Claude to read, search and send safely.
 
@@ -83,9 +86,15 @@ Unknown number, in a private chat:
 - **The model proposes, the code decides.** Notifications only reach you. Replies only go where you
   invoked it; anywhere else they become suggestions for you. Only you can change its rules, and every
   previous version is kept.
-- **No tools for the model.** It cannot read files, run commands, browse or search. Session-only
-  settings deny everything agy can deny, and a watchdog kills any run that reaches for a tool no
-  setting can block.
+- **No tools for the model, unless you give them.** By default it cannot read files, run commands,
+  browse or search. Session-only settings deny everything agy can deny, and a watchdog kills any run
+  that reaches for a tool no setting can block. The skills and MCP tools you enable are the only
+  exceptions, and by default only on your own commands.
+- **Remembers everything.** A SQLite database keeps every message, decision, model call and send,
+  using the SQLite built into Node.
+- **Knows what it costs.** Every call records its input, output, cached and thinking tokens and its
+  cost at Gemini API prices. `agentic-whatsapp costs` sums them up, the log and `stream` show them,
+  and daily, weekly and monthly limits stop the model, with a warning before.
 - **Hard to talk into things.** Other people's messages are marked as data and JSON-encoded, so they
   cannot pose as instructions, and a forwarded message never counts as a command.
 - **Cheap on bursts.** Messages are grouped per chat, so ten messages in a row cost one call.
@@ -100,11 +109,11 @@ Unknown number, in a private chat:
   signed with a secret that changes on every start, and message content stays out of the logs.
 - **Never talks to itself.** Everything it sends carries a prefix and has its own `@name` defused,
   and it remembers what it sent.
-- **One small dependency.** A TOML parser; the rest is Node's standard library.
+- **One small dependency.** A TOML parser; the rest is Node's standard library, SQLite included.
 
 ## Quick start
 
-Requirements: macOS or Linux, Node.js 22.12+, [wacli](https://github.com/openclaw/wacli) 0.26+ and
+Requirements: macOS or Linux, Node.js 22.13+, [wacli](https://github.com/openclaw/wacli) 0.26+ and
 Antigravity CLI 1.5+.
 
 ```bash
@@ -145,9 +154,9 @@ Following ~/Library/Logs/agentic-whatsapp/agent.log · Ctrl+C to stop
 01:51:46  ▶ Ane is running (antigravity, gemini-3.8-flash-low)
 01:51:47  📩 Carla: Hi! The condo fee is due tomorrow, can you pay it by then?
 01:51:47  ⚡ you in Family: @ane what did we decide about Sunday?
-01:51:48  🧠 Family: reply
+01:51:48  🧠 Family: reply · 9.8k → 41 tokens · $0.0075
 01:51:48  📤 reply → Family: 🤖 Ane: Lunch at grandma's at 1 pm. Bob is bringing dessert.
-01:51:56  🧠 Carla: notify
+01:51:56  🧠 Carla: notify · 9.5k → 38 tokens · $0.0073
 01:51:56  📤 notify → Ane chat: 🤖 Ane: Carla says the condo fee is due tomorrow.
 ```
 
@@ -222,6 +231,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `notify`: message you in the home chat | Always. Without a home chat it is only logged. |
 | `reply`: message the chat, as you | Only in a chat where you invoked Ane with `@ane`, or one listed in `routing.auto_reply_chats`. Anywhere else, the reply is sent to you as a suggestion. |
 | `update_instructions`: rewrite its standing rules | Only when a command you typed (not forwarded) asks for it. The previous version is kept. |
+| Use a skill or an MCP tool you enabled | While deciding, before any of the actions above. Only the tools you allowed, and by default only on a command you typed. See [Skills and MCP servers](#skills-and-mcp-servers). |
 
 ## How a decision works
 
@@ -230,10 +240,12 @@ The plugin only needs wacli, and works with or without the agent. See the
 2. Each new message goes through the routing rules above. Messages that pass wait a few seconds for
    the rest of their chat, so a burst becomes one batch.
 3. The engine gets Ane's rules, your instructions, the recent history of that chat and the new
-   messages, on stdin, and must answer with a JSON decision.
+   messages, on stdin, and must answer with a JSON decision. When you enabled skills or MCP servers
+   for that kind of batch, it gets them too.
 4. While it thinks, a watchdog reads its event stream. A tool call that could have an effect kills the
-   run, and the model gets one more try.
+   run, unless it is one of the tools you allowed, and the model gets one more try.
 5. Each action in the decision is checked against the policy above, then carried out through `wacli`.
+6. The batch, the call with its tokens and cost, and what was sent go into the database.
 
 ## Engines
 
@@ -255,6 +267,9 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `agentic-whatsapp status` | Show the service, today's activity and calls, and recent errors |
 | `agentic-whatsapp stream` | Watch the agent live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown |
 | `agentic-whatsapp logs` | Follow the raw log |
+| `agentic-whatsapp costs` | Tokens and costs of today, this week, this month and all time, with the limits; `--days N`, `--by day\|chat\|model`, `--json` |
+| `agentic-whatsapp mcp` | Manage MCP servers: `list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove` |
+| `agentic-whatsapp skills` | Manage skills: `list`, `add`, `show`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp print` | Print the plist that `install` writes |
 | `agentic-whatsapp version` | Print the version |
 
@@ -266,9 +281,10 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `~/Library/Logs/agentic-whatsapp/agent.log` | Everything the agent does, one line per event, without message text; rotated by size |
 | `~/Library/Logs/agentic-whatsapp/launchd.log` | What the service printed outside the log: crashes and startup errors |
 | `~/.local/state/agentic-whatsapp/health.json` | When the agent started, last message and decision, failures in a row |
-| `~/.local/state/agentic-whatsapp/state.json` | Handled message IDs, messages Ane sent, today's call count |
+| `~/.local/state/agentic-whatsapp/agentic-whatsapp.db` | SQLite database: messages, batches and decisions, model calls with tokens and costs, sends, skills and MCP servers |
+| `~/.local/state/agentic-whatsapp/skills/` | Installed copies of your skills |
 | `~/.local/state/agentic-whatsapp/instructions-history/` | Every previous version of the instructions |
-| `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema and the empty workspace agy runs in |
+| `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema, the empty workspace agy runs in, and `workspace-tools/` with the enabled skills and MCP config |
 | `~/.local/state/agentic-whatsapp/gemini/` | The same for Gemini CLI |
 
 Paths follow `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, or `$AGENTIC_WHATSAPP_CONFIG`,
@@ -298,6 +314,8 @@ agentic-whatsapp restart    # after you change the config
   if none appear, enable it in System Settings › Notifications.
 - `agent.log` rotates above `service.log_max_mb` and keeps `service.log_keep` old copies.
 - `stop` keeps the service off until the next login. To turn it off for good, `uninstall`.
+- Versions before 0.4 kept their state in `state.json`. The first start imports it into the database
+  and renames it to `state.json.imported`.
 
 **Linux (systemd)**
 
@@ -308,6 +326,78 @@ Copy [`contrib/systemd/agentic-whatsapp.service`](contrib/systemd/agentic-whatsa
 
 Ane only works while the computer is awake. Messages that arrive while it is off are handled when
 wacli catches up, as long as they are newer than `routing.max_message_age_minutes`.
+
+## Costs
+
+Every run of the engine is stored with its input, output, cached and thinking tokens, and priced
+when it happens, so a later price change does not rewrite history. On Antigravity your Google plan is
+not billed per token: the cost is what the same tokens would cost on the Gemini API, a measure of how
+much of your quota Ane uses. On Gemini CLI with an API key, it is what you pay.
+
+```text
+$ agentic-whatsapp costs
+Prices for gemini-3.8-flash-low: $0.75 input, $3.75 output, $0.075 cached, per million tokens.
+Antigravity runs on your Google AI plan, so these are what the same tokens would cost on the Gemini API.
+
+            calls  input  output  cached     cost  limit
+today          38   362k    1.8k       0  $0.2783  $1.00 (27%)
+this week     190   1.8M    9.1k       0    $1.39  -
+this month    611   5.8M     29k       0    $4.46  $20.00 (22%)
+all time      611   5.8M     29k       0    $4.46
+```
+
+- `--by chat` or `--by model` breaks the last `--days N` down instead of by day; `--json` prints it all
+  as JSON.
+- `status` shows today's, this week's and this month's cost. Each `decision` line of the log and of
+  `stream` carries the tokens and cost of its calls, and a `model call` line has the details of each
+  run, with the tools it used.
+- Set `costs.max_per_day`, `max_per_week` (Monday to Sunday) or `max_per_month` to stop calling the
+  model when one is reached. You are told once in the home chat, and once before, at
+  `costs.warn_percent` of the limit. Days, weeks and months follow `agent.timezone`.
+- Gemini 3.8 Flash is priced out of the box, at its introductory rates until December 31, 2026.
+  For other models, or new prices, set `costs.input_per_million`, `output_per_million` and
+  `cached_per_million`.
+- Antigravity adds about 8,000 tokens of its own to every model step, so a decision costs at least
+  that much input. A call that uses tools takes several steps, about three times as many tokens.
+
+## Skills and MCP servers
+
+Antigravity can use [MCP servers](https://modelcontextprotocol.io) and skills, and Ane can use the
+ones you give it, so that it does more than read: look something up in your notes, check your
+calendar, follow a procedure you wrote down. They live in Ane's own Antigravity workspace and never
+touch your own agy settings. Changes apply from the next message, with no restart.
+
+```bash
+# An MCP server, run by agy for Ane only. Flags go before the name, like agy mcp add.
+agentic-whatsapp mcp add --env NOTES_TOKEN=... notes npx -y @example/notes-mcp
+agentic-whatsapp mcp tools notes search_notes get_note   # allow only these (default: all its tools)
+agentic-whatsapp mcp add --header "Authorization: Bearer ..." calendar https://example.com/mcp
+
+# A skill: a folder with a SKILL.md that has a name and a description, copied in.
+agentic-whatsapp skills add ~/skills/condo-fees
+
+agentic-whatsapp mcp list
+agentic-whatsapp skills list
+agentic-whatsapp mcp disable calendar
+```
+
+Then, in the home chat: "look up in my notes what the plumber charged last time". Ane calls
+`notes/search_notes`, reads the result and answers with a notification. The `stream` shows the
+tools each call used.
+
+- **Scope.** By default a server or skill is only available on a command you typed (`--scope commands`).
+  `--scope all` makes it available for every message that reaches the model, including messages from
+  other people. Use that only for tools that read harmless information, such as the weather, because
+  those messages may try to talk Ane into using them.
+- **Only the tools you allow.** agy gets a permission for each allowed tool and nothing else. A call
+  to any other tool, MCP or not, kills the run, and the model gets one more try.
+- **Skills are instructions.** Ane may read a skill's files, but it cannot run its scripts: commands
+  stay denied. A skill is most useful to teach Ane how and when to use your MCP tools.
+- **Credentials.** `--env` and `--header` values are stored in the database and in the MCP config of
+  Ane's workspace, both readable only by your user. agy is told never to read that config, and the
+  watchdog kills any run that tries. `mcp list` and `mcp show` print only their names.
+- **Commands are stored by full path**, so the background service finds them with its short PATH.
+- Skills and MCP servers need `engine.kind = "antigravity"`. Gemini CLI always runs with every tool denied.
 
 ## Configuration
 
@@ -330,7 +420,7 @@ never passes silently.
 | `engine.command` | `agy` / `gemini` | The engine's executable. |
 | `engine.model` | `gemini-3.8-flash-low` / `gemini-3.8-flash` | Model passed to `--model`. `agy models` lists them. |
 | `engine.timeout_seconds` | `120` | Time limit for one call. |
-| `engine.max_calls_per_day` | `300` | Calls stop for the rest of the day after this many. You are told once. |
+| `engine.max_calls_per_day` | `300` | Calls stop for the rest of the day after this many runs of the engine, retries included. You are told once. |
 | `engine.context_messages` | `20` | Earlier messages of the chat sent as context. |
 | `engine.extra_args` | `[]` | Extra arguments for the engine command. |
 | `wacli.command` | `wacli` | wacli executable. |
@@ -341,6 +431,16 @@ never passes silently.
 | `service.log_max_mb` | `5` | Rotate `agent.log` above this size. |
 | `service.log_keep` | `5` | Rotated copies of the log to keep. |
 | `service.notify` | `true` | macOS notifications from the background service. |
+| `costs.currency` | `USD` | Label of the currency the prices are in. |
+| `costs.input_per_million` | model's price | Price of a million input tokens. Gemini 3.8 Flash is known; set it for other models. |
+| `costs.output_per_million` | model's price | Price of a million output tokens, thinking included. |
+| `costs.cached_per_million` | model's price | Price of a million input tokens read from the cache. |
+| `costs.max_per_day` | `0` | Stop calling the model for the rest of the day at this cost. `0`: no limit. |
+| `costs.max_per_week` | `0` | The same per week, Monday to Sunday. |
+| `costs.max_per_month` | `0` | The same per calendar month. |
+| `costs.warn_percent` | `80` | Tell you once when a limit is this far used up. `0` never warns. |
+| `storage.save_text` | `true` | Keep message text, prompts, answers and sent text in the database. `false` keeps names, IDs, decisions' action types, tokens and costs. |
+| `storage.retention_days` | `0` | Delete those texts after this many days; tokens and costs stay. `0` keeps them. |
 
 ## Before you use it
 
@@ -351,8 +451,12 @@ never passes silently.
   allowed. Keep `auto_reply_chats` short, and start with `--dry-run`.
 - **Your WhatsApp account.** wacli is an unofficial client. Automated behaviour, especially automated
   sending, can get a number restricted by WhatsApp.
-- **Local data.** wacli keeps a copy of your messages on disk, and Ane keeps state next to it. Anyone
-  with access to your user account can read them.
+- **Tools act on your behalf.** A skill or MCP tool you enable can be used with what the model read,
+  and prompt injection can steer that. Allow only the tools you need, keep `--scope all` for harmless
+  ones, and prefer servers that only read.
+- **Local data.** wacli keeps a copy of your messages on disk, and Ane keeps its database next to it,
+  with message text unless `storage.save_text = false`. Anyone with access to your user account can
+  read them.
 
 [SECURITY.md](SECURITY.md) has the full threat model.
 
@@ -391,14 +495,20 @@ agentic-whatsapp/
 │   ├── batcher.ts         # Groups messages per chat
 │   ├── prompt.ts          # Ane's rules and the input of each call
 │   ├── engine.ts          # Picks the engine
-│   ├── antigravity.ts     # Antigravity CLI engine and its watchdog
+│   ├── antigravity.ts     # Antigravity CLI engine, its tool settings and its watchdog
 │   ├── gemini.ts          # Gemini CLI engine
 │   ├── decision.ts        # Decision schema and validation
 │   ├── actions.ts         # The policy, and carrying out allowed actions
 │   ├── receiver.ts        # Signed localhost webhook
 │   ├── wacli.ts           # wacli commands and the sync supervisor
 │   ├── whatsapp.ts        # Message normalization
-│   └── …                  # config, templates, state, instructions, logging and rotation
+│   ├── db.ts              # SQLite database and its migrations
+│   ├── state.ts           # Messages, batches, sends and notices in the database
+│   ├── usage.ts           # Tokens, prices, costs, periods and limits
+│   ├── report.ts          # agentic-whatsapp costs
+│   ├── tools.ts           # Skills and MCP servers the agent may use
+│   ├── manage.ts          # agentic-whatsapp mcp and skills
+│   └── …                  # config, templates, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables
 ```
 

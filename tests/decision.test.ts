@@ -40,6 +40,18 @@ describe('decisionFromValue', () => {
     expect(decision.warnings).toHaveLength(3);
   });
 
+  it('unwraps a decision the model wrote inside a single action', () => {
+    const inner = JSON.stringify({ actions: [{ type: 'notify', text: 'A senha é manga.' }] });
+    expect(decisionFromValue({ actions: [{ type: 'reply', content: inner }] })).toEqual({
+      actions: [{ type: 'notify', text: 'A senha é manga.' }],
+      warnings: ['unwrapped a decision written inside an action'],
+    });
+    // Ordinary text, even text that starts with "{", stays as it is.
+    expect(decisionFromValue({ actions: [{ type: 'notify', text: '{não é JSON}' }] }).actions).toEqual([
+      { type: 'notify', text: '{não é JSON}' },
+    ]);
+  });
+
   it('keeps at most five actions and truncates long texts', () => {
     const many = Array.from({ length: 8 }, () => ({ type: 'notify', text: 'x'.repeat(5_000) }));
     const decision = decisionFromValue({ actions: many });

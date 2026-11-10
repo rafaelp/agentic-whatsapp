@@ -99,6 +99,39 @@ describe('parseConfig', () => {
     );
   });
 
+  it('reads costs and storage, with no limits and every text kept by default', () => {
+    const defaults = parseConfig({ agent: { name: 'Ane' } }, location);
+    expect(defaults.costs).toEqual({
+      currency: 'USD',
+      inputPerMillion: undefined,
+      outputPerMillion: undefined,
+      cachedPerMillion: undefined,
+      maxPerDay: 0,
+      maxPerWeek: 0,
+      maxPerMonth: 0,
+      warnPercent: 80,
+    });
+    expect(defaults.storage).toEqual({ saveText: true, retentionDays: 0 });
+    expect(defaults.paths).toMatchObject({
+      database: '/home/me/.local/state/aw/agentic-whatsapp.db',
+      skillsDir: '/home/me/.local/state/aw/skills',
+    });
+
+    const config = parseConfig(
+      {
+        agent: { name: 'Ane' },
+        costs: { currency: 'BRL', input_per_million: 4, output_per_million: 20.5, max_per_day: 1.5, max_per_month: 30, warn_percent: 0 },
+        storage: { save_text: false, retention_days: 30 },
+      },
+      location,
+    );
+    expect(config.costs).toMatchObject({ currency: 'BRL', inputPerMillion: 4, outputPerMillion: 20.5, maxPerDay: 1.5, maxPerMonth: 30, warnPercent: 0 });
+    expect(config.storage).toEqual({ saveText: false, retentionDays: 30 });
+    expect(() => parseConfig({ agent: { name: 'Ane' }, costs: { max_per_day: -1 } }, location)).toThrow(/number from 0/);
+    expect(() => parseConfig({ agent: { name: 'Ane' }, costs: { max_per_week: '5' } }, location)).toThrow(/number from 0/);
+    expect(() => parseConfig({ agent: { name: 'Ane' }, storage: { keep: true } }, location)).toThrow(/Unknown setting in \[storage\]/);
+  });
+
   it('validates the time zone and the home chat', () => {
     expect(() => parseConfig({ agent: { name: 'Ane', timezone: 'Mars/Base' } }, location)).toThrow(/time zone/);
     expect(() => parseConfig({ agent: { name: 'Ane', home_chat: 'Ane' } }, location)).toThrow(/JIDs/);
@@ -121,6 +154,8 @@ describe('configTemplate', () => {
       homeChat: '120363000000000001@g.us',
     });
     expect(config.engine).toMatchObject({ kind: 'antigravity', command: 'agy', model: 'gemini-3.8-flash-low' });
+    expect(config.costs).toMatchObject({ currency: 'USD', maxPerDay: 0, warnPercent: 80 });
+    expect(config.storage).toEqual({ saveText: true, retentionDays: 0 });
     expect(text).toContain('"@ane"');
   });
 });

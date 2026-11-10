@@ -65,29 +65,35 @@ export interface ActionRuntime {
   messagePrefix: string;
   dryRun: boolean;
   log: Logger;
+  /** The batch these steps answer, for the database. */
+  batchId?: number;
 }
 
 export async function executePlan(plan: readonly PlannedStep[], runtime: ActionRuntime): Promise<void> {
-  const { log } = runtime;
+  const { log, state, batchId } = runtime;
   for (const step of plan) {
     switch (step.kind) {
       case 'send': {
         const text = formatOutgoing(step.text, runtime.agentName, runtime.messagePrefix);
+        const record = { batchId, chat: step.to, purpose: step.purpose, text };
         if (runtime.dryRun) {
           log.info('dry run: would send', { to: step.to, purpose: step.purpose, text });
+          state.recordSent({ ...record, status: 'dry_run' });
           break;
         }
-        runtime.state.noteOutgoing(step.to, text);
+        state.noteOutgoing(step.to, text);
         try {
           const id = await runtime.wacli.sendText(step.to, text);
-          if (id !== undefined) runtime.state.markAgentSent(id);
+          state.recordSent({ ...record, status: 'sent', messageId: id });
           log.info('sent', { to: step.to, purpose: step.purpose, id });
         } catch (error) {
+          state.recordSent({ ...record, status: 'failed', error: errorMessage(error) });
           log.error('send failed', { to: step.to, purpose: step.purpose, error: errorMessage(error) });
         }
         break;
       }
       case 'log':
+        state.recordSent({ batchId, chat: '', purpose: 'notify', text: step.text, status: 'logged', error: step.reason });
         log.info('notification for the owner', { reason: step.reason, text: step.text });
         break;
       case 'write_instructions':

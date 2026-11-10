@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Agent } from '../src/agent.js';
 import { InstructionsStore } from '../src/instructions.js';
-import { AgentState } from '../src/state.js';
+import { ToolRegistry } from '../src/tools.js';
 import type { Action } from '../src/types.js';
 import {
   BOB,
@@ -12,6 +12,7 @@ import {
   HOME,
   makeConfig,
   MemoryLogger,
+  memoryStore,
   NOW,
   OTHER_GROUP,
   payload,
@@ -23,16 +24,16 @@ async function setup(actions: Action[] = [], sections: Parameters<typeof makeCon
   const config = makeConfig(sections, dir);
   const wacli = new FakeWacli();
   const decider = new FakeDecider(actions);
-  const state = await AgentState.load(null);
+  const { store, state, usage } = memoryStore(config);
   const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
   const log = new MemoryLogger();
-  const agent = new Agent({ config, wacli, decider, state, instructions, log, now: () => NOW });
+  const agent = new Agent({ config, wacli, decider, state, usage, instructions, log, now: () => NOW });
   const deliver = async (...payloads: Record<string, unknown>[]) => {
     for (const item of payloads) agent.handleEvent(item);
     agent.flushPending();
     await agent.idle();
   };
-  return { agent, wacli, decider, state, instructions, log, deliver };
+  return { agent, wacli, decider, store, state, usage, instructions, log, deliver };
 }
 
 describe('Agent', () => {
@@ -170,7 +171,7 @@ describe('Agent', () => {
       config,
       wacli: new FakeWacli(),
       decider,
-      state: await AgentState.load(null),
+      ...memoryStore(config),
       instructions: new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history')),
       log: new MemoryLogger(),
       now: () => NOW,
@@ -196,6 +197,84 @@ describe('Agent', () => {
     const queued = log.entries.find((entry) => entry.message === 'queued message');
     expect(queued?.fields).toMatchObject({ chat: BOB, sender: 'Carla', kind: 'message' });
     expect(JSON.stringify(log.entries)).not.toContain('segredo do boleto');
+  });
+
+  it('stores the batch, its call with tokens and cost, and logs the cost of the decision', async () => {
+    const { store, log, deliver } = await setup([{ type: 'notify', text: 'Bob ligou' }]);
+    await deliver(payload({ ChatName: 'Bob', Text: 'me liga' }));
+    expect(store.get('SELECT status, messages, actions FROM batches')).toEqual({
+      status: 'decided',
+      messages: 1,
+      actions: '[{"type":"notify","text":"Bob ligou"}]',
+    });
+    expect(store.get('SELECT chat, status, input_tokens, output_tokens, cost FROM calls')).toEqual({
+      chat: BOB,
+      status: 'ok',
+      input_tokens: 1_000,
+      output_tokens: 100,
+      cost: (1_000 * 0.75 + 100 * 3.75) / 1e6,
+    });
+    expect(store.get('SELECT route, text FROM messages')).toEqual({ route: 'queued', text: 'me liga' });
+    const decision = log.entries.find((entry) => entry.message === 'decision');
+    expect(decision?.fields).toMatchObject({ inputTokens: 1_000, outputTokens: 100, cost: 0.001125 });
+    expect(log.entries.find((entry) => entry.message === 'model call')?.fields).toMatchObject({ status: 'ok', cost: 0.001125 });
+  });
+
+  it('stops at a cost limit and tells the owner once a period', async () => {
+    const { wacli, decider, store, deliver } = await setup([], { costs: { max_per_day: 0.002, warn_percent: 0 } });
+    await deliver(payload({ Text: 'um' }));
+    await deliver(payload({ Chat: '5521999990002@s.whatsapp.net', Text: 'dois' }));
+    expect(wacli.sent).toEqual([]);
+    await deliver(payload({ Chat: '5521999990003@s.whatsapp.net', Text: 'três' }));
+    await deliver(payload({ Chat: '5521999990004@s.whatsapp.net', Text: 'quatro' }));
+    expect(decider.prompts).toHaveLength(2);
+    expect(wacli.sent).toHaveLength(1);
+    expect(wacli.sent[0]?.text).toBe(
+      '🤖 Ane: ⚠️ Daily cost limit of $0.0020 reached ($0.0022 spent). New messages are ignored until tomorrow.',
+    );
+    expect(store.all("SELECT error FROM batches WHERE status = 'skipped'")).toEqual([
+      { error: 'day cost limit reached' },
+      { error: 'day cost limit reached' },
+    ]);
+  });
+
+  it('warns once when a limit is nearly used up', async () => {
+    const { wacli, deliver } = await setup([], { costs: { max_per_month: 0.0013, warn_percent: 80 } });
+    await deliver(payload({ Text: 'um' }));
+    expect(wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: 📊 86% of the monthly cost limit used: $0.0011 of $0.0013.']);
+  });
+
+  it('gives the model the tools of the batch scope', async () => {
+    const dir = await tempDir();
+    const config = makeConfig({}, dir);
+    const decider = new FakeDecider();
+    const { store, state, usage } = memoryStore(config);
+    const tools = new ToolRegistry(store, join(dir, 'skills'));
+    tools.saveServer({ name: 'notes', transport: 'stdio', command: '/bin/notes' });
+    tools.saveServer({ name: 'weather', transport: 'http', url: 'https://example.com/mcp', scope: 'all' });
+    const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+    const agent = new Agent({ config, wacli: new FakeWacli(), decider, state, usage, tools, instructions, log: new MemoryLogger(), now: () => NOW });
+    const deliver = async (item: Record<string, unknown>) => {
+      agent.handleEvent(item);
+      agent.flushPending();
+      await agent.idle();
+    };
+
+    await deliver(payload({ Text: 'qual a previsão?' }));
+    await deliver(payload({ Chat: HOME, FromMe: true, Text: 'procura nas notas' }));
+    expect(decider.options.map((options) => options.tools?.mcp.map((server) => server.name))).toEqual([
+      ['weather'],
+      ['notes', 'weather'],
+    ]);
+    expect(decider.prompts[1]).toContain('<tools>');
+    expect(decider.prompts[1]).toContain('- server "notes": all of its tools');
+  });
+
+  it('logs the tools a call used', async () => {
+    const { decider, log, deliver } = await setup();
+    decider.tools = ['notes/search'];
+    await deliver(payload({ Chat: HOME, FromMe: true, Text: 'procura' }));
+    expect(log.entries.find((entry) => entry.message === 'model call')?.fields).toMatchObject({ tools: ['notes/search'] });
   });
 
   it('ignores receipts and presence events', async () => {

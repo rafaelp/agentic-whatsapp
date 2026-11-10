@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DENY_ALL_TOOLS_POLICY, GeminiCli, parseCliOutput } from '../src/gemini.js';
+import type { Attempt } from '../src/decision.js';
+import { DENY_ALL_TOOLS_POLICY, GeminiCli, parseCliOutput, parseCliUsage } from '../src/gemini.js';
 import { fakeCommand, makeConfig, tempDir } from './helpers.js';
 
 describe('parseCliOutput', () => {
@@ -19,6 +20,22 @@ describe('parseCliOutput', () => {
 
   it('raises stderr when there is no JSON', () => {
     expect(() => parseCliOutput('', 'Please set an Auth method', 1)).toThrow(/Please set an Auth method/);
+  });
+});
+
+describe('parseCliUsage', () => {
+  it('sums the tokens of every model, with thoughts as output', () => {
+    const stdout = JSON.stringify({
+      response: '{}',
+      stats: {
+        models: {
+          'gemini-3.8-flash': { tokens: { prompt: 9_000, candidates: 50, total: 9_080, cached: 4_000, thoughts: 30, tool: 0 } },
+          'gemini-3.8-flash-lite': { tokens: { prompt: 100, candidates: 5 } },
+        },
+      },
+    });
+    expect(parseCliUsage(stdout)).toEqual({ inputTokens: 9_100, outputTokens: 85, thinkingTokens: 30, cachedTokens: 4_000 });
+    expect(parseCliUsage('not json')).toEqual({ inputTokens: 0, outputTokens: 0, thinkingTokens: 0, cachedTokens: 0 });
   });
 });
 
@@ -72,6 +89,21 @@ process.stdout.write(JSON.stringify({ response: '{"actions":[{"type":"notify","t
     expect(await readFile(gemini.systemFile, 'utf8')).toBe('SYSTEM PROMPT');
     expect(await readFile(gemini.policyFile, 'utf8')).toBe(DENY_ALL_TOOLS_POLICY);
     expect(call.cwd).toContain(join('gemini', 'workspace'));
+  });
+
+  it('reports its attempt with the tokens Gemini CLI counted', async () => {
+    const command = await fakeCommand(
+      dir,
+      'gemini',
+      `process.stdout.write(JSON.stringify({ response: '{"actions":[]}', stats: { models: { m: { tokens: { prompt: 10, candidates: 2 } } } } }));`,
+    );
+    const gemini = new GeminiCli(engine({ command }), dir, 'S');
+    await gemini.prepare();
+    const attempts: Attempt[] = [];
+    await gemini.decide('x', { onAttempt: (attempt) => attempts.push(attempt) });
+    expect(attempts).toEqual([
+      expect.objectContaining({ attempt: 1, status: 'ok', usage: { inputTokens: 10, outputTokens: 2, thinkingTokens: 0, cachedTokens: 0 } }),
+    ]);
   });
 
   it('reports a timeout', async () => {

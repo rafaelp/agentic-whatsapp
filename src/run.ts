@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { Agent } from './agent.js';
 import type { Config } from './config.js';
+import { Store } from './db.js';
 import { createEngine } from './engine.js';
 import { Health } from './health.js';
 import { InstructionsStore } from './instructions.js';
@@ -10,10 +11,13 @@ import { createNotifier } from './notify.js';
 import { systemPrompt } from './prompt.js';
 import { startReceiver } from './receiver.js';
 import { AgentState } from './state.js';
+import { ToolRegistry } from './tools.js';
+import { UsageLedger } from './usage.js';
 import { errorMessage } from './util.js';
 import { SyncSupervisor, Wacli } from './wacli.js';
 
 const DRAIN_TIMEOUT_MS = 15_000;
+const PRUNE_EVERY_MS = 6 * 3_600_000;
 
 export interface RunOptions {
   dryRun: boolean;
@@ -57,7 +61,30 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     throw new StartupError(`WhatsApp is not linked. Run "wacli auth", then "agentic-whatsapp restart".\n${auth.detail}`);
   }
 
-  const state = await AgentState.load(join(paths.stateDir, 'state.json'));
+  const store = Store.open(paths.database);
+  const state = new AgentState(store, { saveText: config.storage.saveText });
+  const imported = await state.importLegacy(join(paths.stateDir, 'state.json'));
+  if (imported > 0) log.info('imported state.json into the database', { entries: imported, database: paths.database });
+  const usage = new UsageLedger(store, config.engine, config.costs, config.agent.timezone, config.storage.saveText);
+  const registry = new ToolRegistry(store, paths.skillsDir);
+  const tools = config.engine.kind === 'antigravity' ? registry : undefined;
+  if (tools === undefined && hasEnabledTools(registry)) {
+    log.warn('skills and MCP servers only work with engine.kind = "antigravity"; they are not used');
+  }
+  const prune = () => {
+    if (config.storage.retentionDays === 0) return;
+    const before = new Date(Date.now() - config.storage.retentionDays * 86_400_000);
+    try {
+      const cleared = state.pruneText(before);
+      if (cleared > 0) log.info('deleted old texts from the database', { rows: cleared, before: before.toISOString() });
+    } catch (error) {
+      log.warn('could not delete old texts', { error: errorMessage(error) });
+    }
+  };
+  prune();
+  const pruneTimer = setInterval(prune, PRUNE_EVERY_MS);
+  pruneTimer.unref();
+
   const instructions = new InstructionsStore(paths.instructionsFile, join(paths.stateDir, 'instructions-history'));
   const engine = createEngine(config.engine, paths.stateDir, systemPrompt(config.agent));
   await engine.prepare();
@@ -68,6 +95,8 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     wacli,
     decider: engine,
     state,
+    usage,
+    tools,
     instructions,
     log,
     dryRun: options.dryRun,
@@ -124,6 +153,8 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     service: options.service,
     directMessages: config.routing.directMessages,
     allowlistedGroups: config.routing.groupAllowlist.length,
+    skills: tools?.skills().filter((skill) => skill.enabled).length,
+    mcpServers: tools?.servers().filter((server) => server.enabled).length,
   });
 
   await new Promise<void>((resolve) => {
@@ -137,8 +168,13 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   if (dropped > 0) log.warn('dropped chats still waiting for their debounce', { chats: dropped });
   await Promise.race([agent.idle(), new Promise((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS).unref())]);
   await sync.stop();
-  await state.save();
+  clearInterval(pruneTimer);
+  store.close();
   health.stopped();
   await health.save();
   log.info('stopped');
+}
+
+function hasEnabledTools(registry: ToolRegistry): boolean {
+  return registry.skills().some((skill) => skill.enabled) || registry.servers().some((server) => server.enabled);
 }

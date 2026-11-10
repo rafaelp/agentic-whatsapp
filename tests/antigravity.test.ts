@@ -1,10 +1,19 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AntigravityCli, decisionFromResult, SESSION_SETTINGS } from '../src/antigravity.js';
-import { DECISION_SCHEMA } from '../src/decision.js';
+import {
+  AntigravityCli,
+  decisionFromResult,
+  MCP_TOOL,
+  mcpConfig,
+  mcpGrants,
+  SESSION_SETTINGS,
+  toolSessionSettings,
+} from '../src/antigravity.js';
+import { type Attempt, DECISION_SCHEMA } from '../src/decision.js';
 import { createEngine } from '../src/engine.js';
 import { GeminiCli } from '../src/gemini.js';
+import type { McpServer, ToolSet } from '../src/tools.js';
 import { fakeCommand, makeConfig, tempDir } from './helpers.js';
 
 const success = (structured: unknown) => ({
@@ -18,6 +27,40 @@ const result = (structured: unknown) => ({ event: 'result', result: success(stru
 const tool = (name: string, state: string) => ({
   event: 'step_update',
   step_update: { state, step_type: 'tool', tool_name: name },
+});
+const toolWith = (name: string, state: string, parameters: Record<string, unknown>) => ({
+  event: 'step_update',
+  step_update: { state, step_type: 'tool', tool_name: name, tool_info: { name, parameters } },
+});
+const usage = (input: number, output: number, cached = 0) => ({
+  input_tokens: input,
+  output_tokens: output,
+  thinking_tokens: 0,
+  cache_read_tokens: cached,
+  total_tokens: input + output,
+});
+const modelStep = (input: number, output: number) => ({
+  event: 'step_update',
+  step_update: { state: 'DONE', step_type: 'agent_response', usage: usage(input, output) },
+});
+const withUsage = (event: ReturnType<typeof result>, input: number, output: number, cached = 0) => ({
+  ...event,
+  result: { ...event.result, usage: usage(input, output, cached) },
+});
+const server = (overrides: Partial<McpServer> = {}): McpServer => ({
+  name: 'notes',
+  transport: 'stdio',
+  command: '/bin/notes',
+  args: ['--db', 'x'],
+  url: '',
+  env: { TOKEN: 'secret' },
+  headers: {},
+  tools: ['search'],
+  scope: 'commands',
+  enabled: true,
+  addedAt: '',
+  updatedAt: '1',
+  ...overrides,
 });
 /** Makes the fake agy hang, so only a killed run ends quickly. */
 const HANG = { hang: true };
@@ -201,6 +244,162 @@ ${onEnd}`,
     const { decision } = await decide(command);
     await expect(decision).rejects.toThrow(/authentication required/);
     expect(await calls()).toHaveLength(1);
+  });
+
+  it('reports the tokens of every attempt, summing the steps of a killed run', async () => {
+    const command = await fakeAgy([
+      [modelStep(9_000, 40), modelStep(9_100, 30), tool('search_web', 'ACTIVE'), HANG],
+      [{ event: 'init', conversation_id: 'c2' }, withUsage(result({ actions: [] }), 8_400, 12, 4_000)],
+    ]);
+    const attempts: Attempt[] = [];
+    const agy = new AntigravityCli(engine(command), dir, 'RULES');
+    await agy.prepare();
+    await agy.decide('MESSAGES', { onAttempt: (attempt) => attempts.push(attempt) });
+    expect(attempts.map(({ attempt, status, usage, tools, conversationId }) => ({ attempt, status, usage, tools, conversationId }))).toEqual([
+      {
+        attempt: 1,
+        status: 'tool',
+        usage: { inputTokens: 18_100, outputTokens: 70, thinkingTokens: 0, cachedTokens: 0 },
+        tools: ['search_web'],
+        conversationId: undefined,
+      },
+      {
+        attempt: 2,
+        status: 'ok',
+        usage: { inputTokens: 8_400, outputTokens: 12, thinkingTokens: 0, cachedTokens: 4_000 },
+        tools: [],
+        conversationId: 'c2',
+      },
+    ]);
+  });
+
+  it('retries when agy stops at a tool that needs an approval it cannot ask for', async () => {
+    const denied = { event: 'result', result: { status: 'SUCCESS', response: '', denied_actions: [{ action: 'mcp' }] } };
+    const command = await fakeAgy([[denied], [result({ actions: [{ type: 'notify', text: 'ok' }] })]]);
+    const { decision } = await decide(command);
+    expect((await decision).actions).toEqual([{ type: 'notify', text: 'ok' }]);
+    expect((await calls())[1]?.input).toContain('because you used the tool mcp');
+  });
+
+  describe('with skills and MCP tools', () => {
+    const skillSource = async () => {
+      const folder = join(dir, 'skill-source');
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, 'SKILL.md'), '---\nname: agenda\ndescription: Agenda.\n---\nUse notes.\n');
+      return folder;
+    };
+    const toolSet = async (overrides: Partial<McpServer> = {}): Promise<ToolSet> => ({
+      mcp: [server(overrides)],
+      skills: [
+        {
+          name: 'agenda',
+          description: 'Agenda.',
+          source: '',
+          scope: 'commands',
+          enabled: true,
+          addedAt: '',
+          updatedAt: '1',
+          dir: await skillSource(),
+        },
+      ],
+    });
+    const decideWith = async (command: string, tools: ToolSet) => {
+      const agy = new AntigravityCli(engine(command), dir, 'RULES', { home: dir });
+      await agy.prepare();
+      const attempts: Attempt[] = [];
+      return { agy, attempts, decision: agy.decide('MESSAGES', { tools, onAttempt: (attempt) => attempts.push(attempt) }) };
+    };
+
+    it('runs in their own workspace and lets the allowed ones through', async () => {
+      const tools = await toolSet();
+      const skillFile = join(dir, 'antigravity', 'workspace-tools', '.agents', 'skills', 'agenda', 'SKILL.md');
+      const schema = join(dir, '.gemini', 'antigravity-cli', 'mcp', 'notes', 'search.json');
+      const command = await fakeAgy([
+        [
+          toolWith('read_file', 'ACTIVE', { Path: skillFile }),
+          toolWith('read_file', 'DONE', { Path: skillFile }),
+          toolWith('read_file', 'ACTIVE', { Path: schema }),
+          toolWith('read_file', 'DONE', { Path: schema }),
+          toolWith(MCP_TOOL, 'ACTIVE', { ServerName: 'notes', ToolName: 'search', Arguments: { q: 'x' } }),
+          toolWith(MCP_TOOL, 'DONE', { ServerName: 'notes', ToolName: 'search', Arguments: { q: 'x' } }),
+          result({ actions: [{ type: 'notify', text: 'achei' }] }),
+        ],
+      ]);
+      const { agy, attempts, decision } = await decideWith(command, tools);
+
+      expect((await decision).actions).toEqual([{ type: 'notify', text: 'achei' }]);
+      expect(attempts[0]?.tools).toEqual(['read_file', 'notes/search']);
+      const [call] = await calls();
+      expect(call?.cwd).toContain(join('antigravity', 'workspace-tools'));
+      expect(call?.args[call.args.indexOf('--settings') + 1]).toBe(agy.toolSettingsFile);
+
+      expect(JSON.parse(await readFile(agy.mcpConfigFile, 'utf8'))).toEqual({
+        mcpServers: { notes: { command: '/bin/notes', args: ['--db', 'x'], env: { TOKEN: 'secret' } } },
+      });
+      expect(await readFile(join(agy.skillsDir, 'agenda', 'SKILL.md'), 'utf8')).toContain('Use notes.');
+      const settings = JSON.parse(await readFile(agy.toolSettingsFile, 'utf8'));
+      expect(settings).toEqual(toolSessionSettings(tools, agy.mcpConfigFile));
+      expect(settings.toolPermission).toBe('request-review');
+      expect(settings.permissions.allow).toEqual(['mcp(notes/search)']);
+      expect(settings.permissions.deny).toEqual(
+        expect.arrayContaining(['command(*)', 'write_file(*)', 'read_url(*)', `read_file(${agy.mcpConfigFile})`]),
+      );
+      expect(settings.permissions.deny).not.toContain('mcp(*)');
+      expect(settings.useG1Credits).toBe(false);
+    });
+
+    it.each([
+      ['an MCP tool that is not allowed', () => toolWith(MCP_TOOL, 'ACTIVE', { ServerName: 'notes', ToolName: 'delete' })],
+      ['a server that is not allowed', () => toolWith(MCP_TOOL, 'ACTIVE', { ServerName: 'mail', ToolName: 'send' })],
+      [
+        'the MCP config',
+        () => toolWith('read_file', 'ACTIVE', { Path: join(dir, 'antigravity', 'workspace-tools', '.agents', 'mcp_config.json') }),
+      ],
+      ['a file outside the skills', () => toolWith('read_file', 'ACTIVE', { Path: '../../../config.toml' })],
+      ['a search of the workspace', () => tool('grep_search', 'ACTIVE')],
+    ])('kills a run that reaches for %s, and retries', async (_, step) => {
+      const command = await fakeAgy([[step(), HANG], [result({ actions: [] })]]);
+      const { attempts, decision } = await decideWith(command, await toolSet());
+      expect((await decision).actions).toEqual([]);
+      expect(attempts.map((attempt) => attempt.status)).toEqual(['tool', 'ok']);
+      expect((await calls())[1]?.input).toContain('Use only the tools listed in <tools>');
+    });
+
+    it('allows every tool of a server set to *', async () => {
+      const command = await fakeAgy([
+        [toolWith(MCP_TOOL, 'ACTIVE', { ServerName: 'notes', ToolName: 'anything' }), result({ actions: [] })],
+      ]);
+      const { agy, decision } = await decideWith(command, await toolSet({ tools: ['*'] }));
+      await decision;
+      expect(JSON.parse(await readFile(agy.toolSettingsFile, 'utf8')).permissions.allow).toEqual(['mcp(notes/*)']);
+    });
+
+    it('clears the MCP config of an earlier run when it starts', async () => {
+      const command = await fakeAgy([[result({ actions: [] })]]);
+      const { agy, decision } = await decideWith(command, await toolSet());
+      await decision;
+      await agy.prepare();
+      await expect(readFile(agy.mcpConfigFile, 'utf8')).rejects.toThrow(/ENOENT/);
+    });
+
+    it('runs without tools when the set is empty', async () => {
+      const command = await fakeAgy([[result({ actions: [] })]]);
+      const { agy, decision } = await decideWith(command, { mcp: [], skills: [] });
+      await decision;
+      const [call] = await calls();
+      expect(call?.args[call.args.indexOf('--settings') + 1]).toBe(agy.settingsFile);
+      expect(call?.cwd).not.toContain('workspace-tools');
+    });
+  });
+});
+
+describe('agy files for tools', () => {
+  it('writes http servers with their headers, and denies MCP when only skills are on', () => {
+    expect(mcpConfig([server({ name: 'api', transport: 'http', url: 'https://example.com/mcp', headers: { A: 'b' } })])).toEqual({
+      mcpServers: { api: { url: 'https://example.com/mcp', headers: { A: 'b' } } },
+    });
+    expect(mcpGrants([server({ tools: ['a', 'b'] })])).toEqual(['mcp(notes/a)', 'mcp(notes/b)']);
+    expect(toolSessionSettings({ mcp: [], skills: [] }, '/ws/.agents/mcp_config.json').permissions.deny).toContain('mcp(*)');
   });
 });
 

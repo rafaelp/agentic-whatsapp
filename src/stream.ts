@@ -2,6 +2,7 @@ import { open, stat } from 'node:fs/promises';
 import type { Config } from './config.js';
 import { type LogEntry, type LogFields, parseLogLine } from './log.js';
 import { formatClock } from './time.js';
+import { formatMoney, formatTokens } from './usage.js';
 import { asString } from './util.js';
 import { Wacli } from './wacli.js';
 import { chatKind } from './whatsapp.js';
@@ -32,6 +33,7 @@ const KNOWN = new Set([
   'dry run: would update the instructions',
   'instructions updated',
   'notification for the owner',
+  'cost limit reached, skipping',
 ]);
 
 /** Turns agent log entries into one readable line each, for `agentic-whatsapp stream`. */
@@ -50,6 +52,8 @@ export class StreamRenderer {
 
   wants(entry: LogEntry): boolean {
     if (entry.message === 'skipped message') return this.options.all;
+    // Model calls are shown when they used tools; the decision line carries their cost.
+    if (entry.message === 'model call') return this.options.verbose || Array.isArray(entry.fields.tools);
     if (entry.message.startsWith('wacli: ')) return this.options.verbose;
     if (entry.level === 'warn' || entry.level === 'error') return true;
     if (KNOWN.has(entry.message)) return true;
@@ -95,9 +99,21 @@ export class StreamRenderer {
       case 'decision': {
         this.remember(f);
         const actions = Array.isArray(f.actions) ? f.actions.map(String) : [];
-        body = `🧠 ${this.chatLabel(chat)}: ${actions.length === 0 ? 'nothing to do' : actions.join(', ')}`;
+        body = `🧠 ${this.chatLabel(chat)}: ${actions.length === 0 ? 'nothing to do' : actions.join(', ')}${this.cost(f)}`;
         break;
       }
+      case 'model call': {
+        this.remember(f);
+        const tools = Array.isArray(f.tools) ? f.tools.map(String) : [];
+        const status = f.status === 'ok' ? '' : ` (${asString(f.status) === 'tool' ? 'discarded' : 'failed'})`;
+        body = tools.length > 0 ? `🔧 ${this.chatLabel(chat)}: ${tools.join(', ')}${status}` : `· model call ${this.chatLabel(chat)}${status}${this.cost(f)}`;
+        color = tools.length > 0 ? paint.blue : paint.dim;
+        break;
+      }
+      case 'cost limit reached, skipping':
+        body = `⚠ ${asString(f.period) === '' ? '' : `${asString(f.period)} `}cost limit reached (${this.money(f.spent)} of ${this.money(f.limit)}), skipped ${this.chatLabel(chat)}`;
+        color = paint.yellow;
+        break;
       case 'sent': {
         const to = asString(f.to);
         const text = await this.text(to, asString(f.id), '');
@@ -162,6 +178,20 @@ export class StreamRenderer {
 
     const time = formatClock(entry.time, this.config.agent.timezone);
     return `${paint.dim(time)}  ${color(truncate(body, this.width() - time.length - 2))}`;
+  }
+
+  /** " · 9.4k → 42 tokens · $0.0072" when the entry has them. */
+  private cost(fields: LogFields): string {
+    const parts: string[] = [];
+    if (typeof fields.inputTokens === 'number' && typeof fields.outputTokens === 'number') {
+      parts.push(`${formatTokens(fields.inputTokens)} → ${formatTokens(fields.outputTokens)} tokens`);
+    }
+    if (typeof fields.cost === 'number') parts.push(this.money(fields.cost));
+    return parts.map((part) => ` · ${part}`).join('');
+  }
+
+  private money(value: unknown): string {
+    return typeof value === 'number' ? formatMoney(value, this.config.costs.currency) : '?';
   }
 
   private remember(fields: LogFields): void {
@@ -291,6 +321,7 @@ interface Painter {
   yellow: (text: string) => string;
   cyan: (text: string) => string;
   magenta: (text: string) => string;
+  blue: (text: string) => string;
 }
 
 function painter(enabled: boolean): Painter {
@@ -304,6 +335,7 @@ function painter(enabled: boolean): Painter {
     yellow: code(33, 39),
     cyan: code(36, 39),
     magenta: code(35, 39),
+    blue: code(34, 39),
   };
 }
 

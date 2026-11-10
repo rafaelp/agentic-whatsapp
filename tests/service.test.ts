@@ -1,10 +1,11 @@
+import { existsSync } from 'node:fs';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AgentState } from '../src/state.js';
+import { Store } from '../src/db.js';
 import { buildPlist, LABEL, plistFor, resolveExecutable, statusLines } from '../src/service.js';
-import { dayKey } from '../src/time.js';
-import { makeConfig, NOW, tempDir } from './helpers.js';
+import { UsageLedger } from '../src/usage.js';
+import { BOB, makeConfig, NOW, tempDir } from './helpers.js';
 
 async function executable(dir: string, name: string): Promise<string> {
   await mkdir(dir, { recursive: true });
@@ -103,15 +104,27 @@ describe('statusLines', () => {
     const lines = await statusLines(makeConfig({}, dir), NOW);
     expect(lines).toContain('agent     has not run yet');
     expect(lines.find((line) => line.startsWith('calls'))).toBe('calls     0 of 300 today');
+    expect(lines.find((line) => line.startsWith('cost'))).toBe('cost      $0.0000 today · $0.0000 this week · $0.0000 this month');
     expect(lines.find((line) => line.startsWith('log'))).toContain(join(dir, 'logs', 'agent.log'));
+    expect(existsSync(makeConfig({}, dir).paths.database)).toBe(false);
   });
 
   it('reports today’s calls and the health the agent saved', async () => {
     const dir = await tempDir();
     const config = makeConfig({}, dir);
-    const state = await AgentState.load(join(dir, 'state.json'));
-    state.tryConsumeCall(dayKey(NOW, config.agent.timezone), 300);
-    await state.save();
+    const store = Store.open(config.paths.database);
+    new UsageLedger(store, config.engine, config.costs, config.agent.timezone).record(
+      {
+        attempt: 1,
+        startedAt: NOW,
+        durationMs: 9_000,
+        status: 'ok',
+        usage: { inputTokens: 10_000, outputTokens: 100, thinkingTokens: 0, cachedTokens: 0 },
+        tools: [],
+      },
+      { chat: BOB, chatName: 'Bob' },
+    );
+    store.close();
     await writeFile(
       config.paths.healthFile,
       JSON.stringify({
@@ -126,6 +139,9 @@ describe('statusLines', () => {
     const lines = await statusLines(config, NOW);
     expect(lines.find((line) => line.startsWith('agent'))).toMatch(/up since 2026-11-10 12:00 · last message 2026-11-10 12:00/);
     expect(lines.find((line) => line.startsWith('calls'))).toBe('calls     1 of 300 today');
+    // 10,000 × $0.75 + 100 × $3.75 per million
+    expect(lines.find((line) => line.startsWith('cost'))).toBe('cost      $0.0079 today · $0.0079 this week · $0.0079 this month');
+    expect(lines).toContain(`database  ${config.paths.database}`);
     expect(lines.find((line) => line.startsWith('wacli'))).toContain('failing, 2 in a row');
     expect(lines.find((line) => line.startsWith('engine'))).toBe('engine    ok (antigravity, gemini-3.8-flash-low)');
   });

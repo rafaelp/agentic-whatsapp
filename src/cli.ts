@@ -9,10 +9,26 @@ import { createNotifier } from './notify.js';
 import { runProcess } from './process.js';
 import { systemPrompt } from './prompt.js';
 import { runAgent, StartupError } from './run.js';
-import { followLog, install, plistFor, restart, start, statusLines, stop, uninstall } from './service.js';
+import { Store } from './db.js';
+import { mcpCommand, skillsCommand, splitConfigOption } from './manage.js';
+import { costReport } from './report.js';
+import {
+  followLog,
+  install,
+  openLedger,
+  plistFor,
+  resolveExecutable,
+  restart,
+  start,
+  statusLines,
+  stop,
+  uninstall,
+} from './service.js';
 import { stream } from './stream.js';
 import { configTemplate, instructionsTemplate } from './templates.js';
 import { systemTimeZone } from './time.js';
+import { ToolError, ToolRegistry } from './tools.js';
+import { formatMoney, formatPrice, limitFor, PERIODS, pricesFor } from './usage.js';
 import { errorMessage } from './util.js';
 import { Wacli } from './wacli.js';
 
@@ -32,6 +48,9 @@ Commands:
   status      Show the service, today's activity and recent errors
   stream      Watch the agent live: messages arriving, decisions, sends (--all, --no-text, --lines N)
   logs        Follow the raw log
+  costs       Tokens and costs of today, this week, this month (--days N, --by day|chat|model, --json)
+  mcp         Manage the MCP servers the agent may use (list, add, show, tools, scope, enable, disable, remove)
+  skills      Manage the agent's skills (list, add, show, scope, enable, disable, remove)
   print       Print the plist that "install" writes
   help        Show this help
   version     Show the version
@@ -53,6 +72,14 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(usage(version));
     return 0;
   }
+  if (command === 'mcp' || command === 'skills') {
+    // Their own flags, such as those of an MCP server command, are not the CLI's.
+    const { config, args } = splitConfigOption(command, rest);
+    const loaded = await loadConfig(resolve(config ?? defaultConfigPath()));
+    const lines = command === 'mcp' ? await mcpCommand(loaded, args) : await skillsCommand(loaded, args);
+    process.stdout.write(`${lines.join('\n')}\n`);
+    return 0;
+  }
 
   const { values } = parseArgs({
     args: rest,
@@ -71,6 +98,9 @@ async function main(argv: string[]): Promise<number> {
       all: { type: 'boolean', default: false },
       text: { type: 'boolean', default: true },
       lines: { type: 'string', default: '20' },
+      days: { type: 'string', default: '7' },
+      by: { type: 'string', default: 'day' },
+      json: { type: 'boolean', default: false },
     },
   });
   const configFile = resolve(values.config ?? defaultConfigPath());
@@ -120,6 +150,22 @@ async function main(argv: string[]): Promise<number> {
     case 'logs':
       followLog(await loadConfig(configFile));
       return 0;
+    case 'costs': {
+      const by = values.by;
+      if (by !== 'day' && by !== 'chat' && by !== 'model') {
+        process.stderr.write('--by takes day, chat or model\n');
+        return 2;
+      }
+      const days = Number.parseInt(values.days, 10);
+      const config = await loadConfig(configFile);
+      const opened = openLedger(config);
+      try {
+        print(costReport(config, opened?.ledger, new Date(), { days: Number.isFinite(days) ? Math.min(Math.max(days, 1), 366) : 7, by, json: values.json }));
+      } finally {
+        opened?.store.close();
+      }
+      return 0;
+    }
     case 'print':
     case 'launchd':
       process.stdout.write(plistFor(await loadConfig(configFile)));
@@ -225,6 +271,39 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
     report(false, 'wacli', errorMessage(error));
   }
 
+  const prices = pricesFor(config.engine.model, config.costs);
+  const money = (amount: number) => formatMoney(amount, config.costs.currency);
+  const limits = PERIODS.filter((period) => limitFor(config.costs, period) > 0).map(
+    (period) => `${money(limitFor(config.costs, period))}/${period}`,
+  );
+  const limitText = limits.length === 0 ? 'no cost limits' : `limits ${limits.join(', ')}`;
+  if (prices.known) {
+    const price = (amount: number) => formatPrice(amount, config.costs.currency);
+    report(true, 'costs', `${price(prices.input)} in, ${price(prices.output)} out, ${price(prices.cached)} cached per 1M tokens; ${limitText}`);
+  } else {
+    note('costs', `no known prices for ${config.engine.model}: set input_per_million and output_per_million in [costs]; ${limitText}`);
+  }
+
+  const store = Store.open(config.paths.database);
+  try {
+    const registry = new ToolRegistry(store, config.paths.skillsDir);
+    const skills = registry.skills().filter((skill) => skill.enabled);
+    const servers = registry.servers().filter((server) => server.enabled);
+    if (skills.length + servers.length > 0 && config.engine.kind !== 'antigravity') {
+      note('tools', `${skills.length} skill(s) and ${servers.length} MCP server(s) are on, but only engine.kind = "antigravity" uses them`);
+    } else {
+      report(true, 'tools', `${skills.length} skill(s), ${servers.length} MCP server(s) enabled`);
+    }
+    for (const server of servers) {
+      if (server.transport === 'stdio' && resolveExecutable(server.command) === null) {
+        report(false, 'mcp', `${server.name}: ${server.command} was not found`);
+      }
+    }
+  } finally {
+    store.close();
+  }
+  report(true, 'database', config.paths.database);
+
   const { engine } = config;
   const label = engineLabel(engine.kind);
   try {
@@ -273,7 +352,8 @@ main(process.argv.slice(2)).then(
     process.exitCode = code;
   },
   (error: unknown) => {
-    process.stderr.write(`agentic-whatsapp: ${error instanceof ConfigError ? error.message : errorMessage(error)}\n`);
+    const known = error instanceof ConfigError || error instanceof ToolError;
+    process.stderr.write(`agentic-whatsapp: ${known ? error.message : errorMessage(error)}\n`);
     process.exitCode = 1;
   },
 );

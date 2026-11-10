@@ -2,9 +2,12 @@ import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Config, parseConfig } from '../src/config.js';
-import type { DecisionMaker } from '../src/decision.js';
+import { Store } from '../src/db.js';
+import type { DecideOptions, DecisionMaker } from '../src/decision.js';
 import type { LogFields, Logger } from '../src/log.js';
+import { AgentState } from '../src/state.js';
 import type { Action, ChatMessage, Decision } from '../src/types.js';
+import { type Usage, UsageLedger } from '../src/usage.js';
 import type { WacliClient } from '../src/wacli.js';
 import type { StoredMessage } from '../src/whatsapp.js';
 
@@ -80,14 +83,38 @@ export class FakeWacli implements WacliClient {
   }
 }
 
+/** An in-memory database with the state and ledger the agent uses. */
+export function memoryStore(config: Config = makeConfig()): { store: Store; state: AgentState; usage: UsageLedger } {
+  const store = Store.open(null);
+  return {
+    store,
+    state: new AgentState(store),
+    usage: new UsageLedger(store, config.engine, config.costs, config.agent.timezone),
+  };
+}
+
+/** Answers with `actions`, reporting one attempt with `usage` (1,000 tokens in, 100 out) and `tools`. */
 export class FakeDecider implements DecisionMaker {
   readonly prompts: string[] = [];
+  readonly options: DecideOptions[] = [];
   error: Error | undefined;
+  usage: Usage = { inputTokens: 1_000, outputTokens: 100, thinkingTokens: 0, cachedTokens: 0 };
+  tools: string[] = [];
 
   constructor(public actions: Action[] = []) {}
 
-  async decide(prompt: string): Promise<Decision> {
+  async decide(prompt: string, options: DecideOptions = {}): Promise<Decision> {
     this.prompts.push(prompt);
+    this.options.push(options);
+    options.onAttempt?.({
+      attempt: 1,
+      startedAt: NOW,
+      durationMs: 1_000,
+      status: this.error === undefined ? 'ok' : 'failed',
+      error: this.error?.message,
+      usage: this.usage,
+      tools: this.tools,
+    });
     if (this.error !== undefined) throw this.error;
     return { actions: this.actions, warnings: [] };
   }
