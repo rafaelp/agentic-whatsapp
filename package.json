@@ -1,6 +1,6 @@
 {
   "name": "@rafaelp-aios/agentic-whatsapp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "An AI assistant that reads your WhatsApp and tells you what matters: wacli keeps your account in sync, Antigravity CLI decides on your Google AI plan, and you set the rules from WhatsApp.",
   "license": "MIT",
   "author": "Rafael Lima",

@@ -6,6 +6,14 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-10
+
+### Fixed
+
+- A message that wacli delivers twice, first without content and then with its text, was dropped
+  as a duplicate. This happens to the first message a device sends in a group, which carries the
+  group's encryption key.
+
 ## [0.3.0] - 2026-11-10
 
 The first npm release since 0.1.0. It also ships [0.2.0](#020---2026-11-10), which was tagged but never published to npm: the Claude Code plugin marketplace with the `whatsapp` plugin.
@@ -50,7 +58,8 @@ Tagged, but not published to npm. Its changes ship in 0.3.0.
 - Daily limit on model calls.
 - `init`, `check`, `launchd` and a systemd unit.
 
-[Unreleased]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rafaelp/agentic-whatsapp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rafaelp/agentic-whatsapp/releases/tag/v0.1.0
