@@ -91,6 +91,17 @@ describe('UsageLedger', () => {
     });
   });
 
+  it('records what a call was for, a decision unless told otherwise', () => {
+    const ledger = ledgerFor();
+    ledger.record(attempt(), { chat: BOB, chatName: 'Bob' });
+    ledger.record(attempt(), { chat: BOB, chatName: 'Bob', purpose: 'audio' });
+    ledger.record(attempt(), { chat: BOB, chatName: 'Bob', purpose: 'audio' });
+    expect(ledger.breakdown('purpose', '2026-11-01').map((group) => [group.key, group.calls])).toEqual([
+      ['audio', 2],
+      ['decision', 1],
+    ]);
+  });
+
   it('reports the first limit reached and the ones close to it', () => {
     const ledger = ledgerFor({ max_per_day: 0.1, max_per_month: 1, warn_percent: 50 });
     ledger.record(attempt(), { chat: BOB, chatName: '' }); // $0.07875

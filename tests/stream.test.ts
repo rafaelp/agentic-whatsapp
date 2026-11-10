@@ -63,6 +63,22 @@ describe('StreamRenderer', () => {
     );
   });
 
+  it('shows images described and audio transcribed, with their cost, and media it could not read', async () => {
+    const r = renderer();
+    const bob = BOB.split('@')[0];
+    expect(await r.render(entry('media read', { chat: BOB, kind: 'audio', inputTokens: 20_000, outputTokens: 40, cost: 0.015 }))).toBe(
+      `12:00:00  🎤 ${bob}: audio transcribed · 20k → 40 tokens · $0.0150`,
+    );
+    expect(await r.render(entry('media read', { chat: BOB, kind: 'image' }))).toBe(`12:00:00  🖼 ${bob}: image described`);
+    expect(await r.render(entry('media not read', { chat: BOB, kind: 'image', reason: 'too large' }))).toBe(
+      `12:00:00  · ${bob}: image not read, too large`,
+    );
+    expect(await r.render(entry('could not read media', { chat: BOB, kind: 'audio', error: 'media expired' }, 'warn'))).toBe(
+      `12:00:00  ⚠ could not read the audio (${bob}): media expired`,
+    );
+    expect(r.wants(entry('media read', { chat: BOB }))).toBe(true);
+  });
+
   it('keeps message text off the screen with --no-text', async () => {
     const r = renderer({ text: false });
     expect(await r.render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob', media: 'image' }))).toBe(

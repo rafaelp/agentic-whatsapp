@@ -64,6 +64,27 @@ process.stdout.write(process.env.FAKE_STDOUT + '\\n');`,
     expect(await fake.args()).toEqual(['messages', 'list', `--chat=${BOB}`, '--limit=5', '--json']);
   });
 
+  it('downloads media read-only, so it works during sync', async () => {
+    const fake = await recordingWacli(
+      '{"success":true,"data":{"path":"/m/V1.ogg","bytes":9120,"mime_type":"audio/ogg; codecs=opus","source":"server"},"error":null}',
+    );
+    const wacli = new Wacli(fake.command, '');
+    expect(await wacli.downloadMedia(BOB, 'V1', '/m/V1.ogg')).toEqual({
+      path: '/m/V1.ogg',
+      bytes: 9120,
+      mimeType: 'audio/ogg; codecs=opus',
+    });
+    expect(await fake.args()).toEqual([
+      '--read-only',
+      'media',
+      'download',
+      `--chat=${BOB}`,
+      '--id=V1',
+      '--output=/m/V1.ogg',
+      '--json',
+    ]);
+  });
+
   it('raises the error wacli reports', async () => {
     const fake = await recordingWacli('{"success":false,"data":null,"error":"recipient not found"}');
     await expect(new Wacli(fake.command, '').sendText(BOB, 'oi')).rejects.toThrow(/recipient not found/);

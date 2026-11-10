@@ -92,10 +92,21 @@ warn_percent = 80
 
 [storage]
 # The database keeps every message, decision, model call and send. false keeps
-# names, IDs, tokens and costs, but no message text, prompts or answers.
+# names, IDs, tokens and costs, but no message text, descriptions, transcripts,
+# prompts or answers, and deletes each image or audio file once it is read.
 save_text = true
-# Delete those texts after this many days; tokens and costs stay. 0 keeps them.
+# Delete those texts, and the image and audio files, after this many days; tokens
+# and costs stay. 0 keeps them.
 retention_days = 0
+
+[media]
+# Images and audio of the messages the model sees are downloaded through wacli and
+# read by the model first (Antigravity only): images are described, audio and voice
+# notes transcribed. Each one is a model call of its own.
+images = true
+audio = true
+# Larger files are not downloaded.
+max_size_mb = 20
 `;
 }
 

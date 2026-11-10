@@ -121,11 +121,16 @@ export interface LimitState {
   limit: number;
 }
 
+/** What a call was for. */
+export type CallPurpose = 'decision' | 'image' | 'audio';
+
 export interface CallContext {
   batchId?: number;
   chat: string;
   chatName: string;
   prompt?: string;
+  /** Defaults to a decision. */
+  purpose?: CallPurpose;
 }
 
 const TOTALS = `count(*) AS calls, total(input_tokens) AS input, total(output_tokens) AS output,
@@ -156,8 +161,8 @@ export class UsageLedger {
     this.store.run(
       `INSERT INTO calls (batch_id, chat, chat_name, started_at, day, week, month, duration_ms, engine, model, attempt,
         status, error, input_tokens, output_tokens, thinking_tokens, cached_tokens, cost, currency, tools, conversation_id,
-        prompt, response)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        prompt, response, purpose)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       context.batchId,
       context.chat,
       context.chatName,
@@ -181,6 +186,7 @@ export class UsageLedger {
       attempt.conversationId,
       this.saveText ? context.prompt : undefined,
       this.saveText ? attempt.response : undefined,
+      context.purpose ?? 'decision',
     );
     return cost;
   }
@@ -226,9 +232,9 @@ export class UsageLedger {
     );
   }
 
-  /** Totals per day, chat or model, for calls made on `since` (YYYY-MM-DD) or later. */
-  breakdown(by: 'day' | 'chat' | 'model', since: string): Group[] {
-    const key = by === 'day' ? 'day' : by === 'chat' ? 'chat' : 'model';
+  /** Totals per day, chat, model or purpose, for calls made on `since` (YYYY-MM-DD) or later. */
+  breakdown(by: 'day' | 'chat' | 'model' | 'purpose', since: string): Group[] {
+    const key = by === 'day' ? 'day' : by === 'chat' ? 'chat' : by === 'model' ? 'model' : 'purpose';
     const label = by === 'chat' ? `max(chat_name)` : key;
     const order = by === 'day' ? 'key' : 'cost DESC, key';
     return this.store

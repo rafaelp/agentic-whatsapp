@@ -1,5 +1,6 @@
 import { readFile, rename } from 'node:fs/promises';
 import type { Store } from './db.js';
+import type { MediaResult } from './media.js';
 import type { Route } from './router.js';
 import type { Batch, ChatMessage, Decision } from './types.js';
 import { isNotFound, isRecord } from './util.js';
@@ -106,6 +107,28 @@ export class AgentState {
     );
   }
 
+  /** Stores what came of reading a message's image or audio. */
+  recordMedia(chat: string, id: string, result: MediaResult): void {
+    this.store.run(
+      'UPDATE messages SET media_file = ?, media_text = ?, media_error = ? WHERE chat = ? AND id = ?',
+      result.file,
+      this.options.saveText ? result.text : undefined,
+      result.error ?? result.skipped,
+      chat,
+      id,
+    );
+  }
+
+  /** Descriptions and transcripts of earlier messages of a chat, by message ID. */
+  mediaTexts(chat: string, ids: readonly string[]): Map<string, string> {
+    const texts = new Map<string, string>();
+    for (const id of ids) {
+      const row = this.store.get('SELECT media_text FROM messages WHERE chat = ? AND id = ?', chat, id);
+      if (typeof row?.media_text === 'string' && row.media_text !== '') texts.set(id, row.media_text);
+    }
+    return texts;
+  }
+
   /** Whether the agent sent the WhatsApp message with this ID. */
   isAgentSent(id: string): boolean {
     return this.store.get('SELECT 1 AS found FROM sent WHERE message_id = ? LIMIT 1', id) !== undefined;
@@ -133,14 +156,18 @@ export class AgentState {
   }
 
   /**
-   * Deletes message text, prompts, answers and sent text older than `before`. IDs, names,
-   * decisions, tokens and costs stay, so duplicates are still recognized and costs still add up.
+   * Deletes message text, descriptions and transcripts, prompts, answers and sent text older
+   * than `before`. IDs, names, decisions, tokens and costs stay, so duplicates are still
+   * recognized and costs still add up.
    */
   pruneText(before: Date): number {
     const cutoff = before.toISOString();
     return this.store.transaction(
       () =>
-        this.store.run('UPDATE messages SET text = NULL WHERE received_at < ? AND text IS NOT NULL', cutoff).changes +
+        this.store.run(
+          'UPDATE messages SET text = NULL, media_text = NULL WHERE received_at < ? AND (text IS NOT NULL OR media_text IS NOT NULL)',
+          cutoff,
+        ).changes +
         this.store.run(
           'UPDATE calls SET prompt = NULL, response = NULL WHERE started_at < ? AND (prompt IS NOT NULL OR response IS NOT NULL)',
           cutoff,
@@ -153,6 +180,19 @@ export class AgentState {
           cutoff,
         ).changes,
     );
+  }
+
+  /**
+   * Forgets the media files of messages received before `before` and returns their paths,
+   * for the caller to delete.
+   */
+  takeMediaFiles(before: Date): string[] {
+    return this.store.transaction(() => {
+      const cutoff = before.toISOString();
+      const rows = this.store.all('SELECT media_file FROM messages WHERE received_at < ? AND media_file IS NOT NULL', cutoff);
+      this.store.run('UPDATE messages SET media_file = NULL WHERE received_at < ? AND media_file IS NOT NULL', cutoff);
+      return rows.map((row) => String(row.media_file));
+    });
   }
 
   /**

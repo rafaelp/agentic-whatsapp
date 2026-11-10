@@ -87,11 +87,13 @@ Unknown number, in a private chat:
   invoked it; anywhere else they become suggestions for you. Only you can change its rules, and every
   previous version is kept.
 - **No tools for the model, unless you give them.** By default it cannot read files, run commands,
-  browse or search. Session-only settings deny everything agy can deny, and a watchdog kills any run
+  browse or search; it only reads the one image or audio file it is asked to. Session-only settings deny everything agy can deny, and a watchdog kills any run
   that reaches for a tool no setting can block. The skills and MCP tools you enable are the only
   exceptions, and by default only on your own commands.
 - **Remembers everything.** A SQLite database keeps every message, decision, model call and send,
   using the SQLite built into Node.
+- **Sees images and hears voice notes.** Photos are described and audio is transcribed before Ane
+  decides, so a voice note in the home chat is a command like any other.
 - **Knows what it costs.** Every call records its input, output, cached and thinking tokens and its
   cost at Gemini API prices. `agentic-whatsapp costs` sums them up, the log and `stream` show them,
   and daily, weekly and monthly limits stop the model, with a warning before.
@@ -231,6 +233,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `notify`: message you in the home chat | Always. Without a home chat it is only logged. |
 | `reply`: message the chat, as you | Only in a chat where you invoked Ane with `@ane`, or one listed in `routing.auto_reply_chats`. Anywhere else, the reply is sent to you as a suggestion. |
 | `update_instructions`: rewrite its standing rules | Only when a command you typed (not forwarded) asks for it. The previous version is kept. |
+| Read an image or audio file | Before deciding, for a message that reaches the model: that message's file only, in a run of its own. See [Images and audio](#images-and-audio). |
 | Use a skill or an MCP tool you enabled | While deciding, before any of the actions above. Only the tools you allowed, and by default only on a command you typed. See [Skills and MCP servers](#skills-and-mcp-servers). |
 
 ## How a decision works
@@ -239,13 +242,15 @@ The plugin only needs wacli, and works with or without the agent. See the
    it with a random secret. If wacli stops, it is restarted.
 2. Each new message goes through the routing rules above. Messages that pass wait a few seconds for
    the rest of their chat, so a burst becomes one batch.
-3. The engine gets Ane's rules, your instructions, the recent history of that chat and the new
+3. Images and audio in the batch are downloaded through wacli and read by the model, one call each:
+   images are described, audio transcribed. See [Images and audio](#images-and-audio).
+4. The engine gets Ane's rules, your instructions, the recent history of that chat and the new
    messages, on stdin, and must answer with a JSON decision. When you enabled skills or MCP servers
    for that kind of batch, it gets them too.
-4. While it thinks, a watchdog reads its event stream. A tool call that could have an effect kills the
+5. While it thinks, a watchdog reads its event stream. A tool call that could have an effect kills the
    run, unless it is one of the tools you allowed, and the model gets one more try.
-5. Each action in the decision is checked against the policy above, then carried out through `wacli`.
-6. The batch, the call with its tokens and cost, and what was sent go into the database.
+6. Each action in the decision is checked against the policy above, then carried out through `wacli`.
+7. The batch, the calls with their tokens and cost, and what was sent go into the database.
 
 ## Engines
 
@@ -267,7 +272,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `agentic-whatsapp status` | Show the service, today's activity and calls, and recent errors |
 | `agentic-whatsapp stream` | Watch the agent live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown |
 | `agentic-whatsapp logs` | Follow the raw log |
-| `agentic-whatsapp costs` | Tokens and costs of today, this week, this month and all time, with the limits; `--days N`, `--by day\|chat\|model`, `--json` |
+| `agentic-whatsapp costs` | Tokens and costs of today, this week, this month and all time, with the limits; `--days N`, `--by day\|chat\|model\|purpose`, `--json` |
 | `agentic-whatsapp mcp` | Manage MCP servers: `list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp skills` | Manage skills: `list`, `add`, `show`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp print` | Print the plist that `install` writes |
@@ -283,8 +288,9 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `~/.local/state/agentic-whatsapp/health.json` | When the agent started, last message and decision, failures in a row |
 | `~/.local/state/agentic-whatsapp/agentic-whatsapp.db` | SQLite database: messages, batches and decisions, model calls with tokens and costs, sends, skills and MCP servers |
 | `~/.local/state/agentic-whatsapp/skills/` | Installed copies of your skills |
+| `~/.local/state/agentic-whatsapp/media/` | Images and audio Ane read, one folder per chat |
 | `~/.local/state/agentic-whatsapp/instructions-history/` | Every previous version of the instructions |
-| `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema, the empty workspace agy runs in, and `workspace-tools/` with the enabled skills and MCP config |
+| `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema, the empty workspace agy runs in, `workspace-tools/` with the enabled skills and MCP config, and the empty `workspace-media/` |
 | `~/.local/state/agentic-whatsapp/gemini/` | The same for Gemini CLI |
 
 Paths follow `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, or `$AGENTIC_WHATSAPP_CONFIG`,
@@ -346,8 +352,8 @@ this month    611   5.8M     29k       0    $4.46  $20.00 (22%)
 all time      611   5.8M     29k       0    $4.46
 ```
 
-- `--by chat` or `--by model` breaks the last `--days N` down instead of by day; `--json` prints it all
-  as JSON.
+- `--by chat`, `--by model` or `--by purpose` (decisions, images, audio) breaks the last `--days N`
+  down instead of by day; `--json` prints it all as JSON.
 - `status` shows today's, this week's and this month's cost. Each `decision` line of the log and of
   `stream` carries the tokens and cost of its calls, and a `model call` line has the details of each
   run, with the tools it used.
@@ -359,6 +365,7 @@ all time      611   5.8M     29k       0    $4.46
   `cached_per_million`.
 - Antigravity adds about 8,000 tokens of its own to every model step, so a decision costs at least
   that much input. A call that uses tools takes several steps, about three times as many tokens.
+  Reading an image or audio takes two or three steps: 20,000 to 30,000 tokens, about $0.015 to $0.025.
 
 ## Skills and MCP servers
 
@@ -398,6 +405,37 @@ tools each call used.
   watchdog kills any run that tries. `mcp list` and `mcp show` print only their names.
 - **Commands are stored by full path**, so the background service finds them with its short PATH.
 - Skills and MCP servers need `engine.kind = "antigravity"`. Gemini CLI always runs with every tool denied.
+
+## Images and audio
+
+When a message that reaches the model carries an image or audio, Ane downloads it through wacli and
+has the model read it before deciding: images are described, with any text in them copied word for
+word, and audio and voice notes are transcribed in the language spoken. The decision then gets the
+`description` or `transcript` next to the message, and later decisions find it again in the chat
+history.
+
+```text
+17:42:10  📩 Bob: [audio]
+17:42:22  🎤 Bob: audio transcribed · 20k → 40 tokens · $0.0153
+17:42:31  🧠 Bob: notify · 9.8k → 61 tokens · $0.0076
+```
+
+- **Voice commands.** A voice note you record in the home chat is a command, like a typed one. A
+  transcript of anyone else's audio, and anything written inside an image, is data, never an order.
+- **A run of its own.** Each file is read in a separate agy run that gets only that file and the
+  request to describe or transcribe it: no rules, no messages, no tools but reading that one file.
+  The watchdog kills the run if it reaches for anything else.
+- **Downloads work while wacli syncs.** wacli fetches the file straight from WhatsApp's media servers
+  in read-only mode, with the keys in its own archive.
+- **What is kept.** The files stay in `~/.local/state/agentic-whatsapp/media/`, readable only by you,
+  and the description or transcript goes into the database. `storage.save_text = false` deletes
+  each file once it is read and keeps no text; `storage.retention_days` deletes both after that many
+  days.
+- **Limits.** Up to 10 files per batch, 3 at a time, each up to `media.max_size_mb`. Each one is a
+  model call that counts toward the cost limits and `engine.max_calls_per_day`. A file that cannot be
+  read gets a note, and Ane decides with what it has.
+- Turn either off with `media.images = false` or `media.audio = false`. Reading media needs
+  `engine.kind = "antigravity"`; with Gemini CLI the model gets only the type and the caption.
 
 ## Configuration
 
@@ -439,13 +477,16 @@ never passes silently.
 | `costs.max_per_week` | `0` | The same per week, Monday to Sunday. |
 | `costs.max_per_month` | `0` | The same per calendar month. |
 | `costs.warn_percent` | `80` | Tell you once when a limit is this far used up. `0` never warns. |
-| `storage.save_text` | `true` | Keep message text, prompts, answers and sent text in the database. `false` keeps names, IDs, decisions' action types, tokens and costs. |
-| `storage.retention_days` | `0` | Delete those texts after this many days; tokens and costs stay. `0` keeps them. |
+| `storage.save_text` | `true` | Keep message text, descriptions, transcripts, prompts, answers and sent text in the database, and the image and audio files. `false` keeps names, IDs, decisions' action types, tokens and costs, and deletes each file once read. |
+| `storage.retention_days` | `0` | Delete those texts and files after this many days; tokens and costs stay. `0` keeps them. |
+| `media.images` | `true` | Describe the images of messages that reach the model. |
+| `media.audio` | `true` | Transcribe their audio and voice notes. |
+| `media.max_size_mb` | `20` | Larger files are not downloaded. |
 
 ## Before you use it
 
 - **Your conversations go to Google.** Everything that passes routing is sent to the model, including
-  what other people wrote to you. Check how your Google plan handles that data.
+  what other people wrote to you, and the images and audio they sent. Check how your Google plan handles that data.
 - **Prompt injection cannot be fully prevented.** The layers above limit what a manipulated answer can
   do, but it can still change what you are told, or what Ane replies in a chat where replies are
   allowed. Keep `auto_reply_chats` short, and start with `--dry-run`.
@@ -455,7 +496,7 @@ never passes silently.
   and prompt injection can steer that. Allow only the tools you need, keep `--scope all` for harmless
   ones, and prefer servers that only read.
 - **Local data.** wacli keeps a copy of your messages on disk, and Ane keeps its database next to it,
-  with message text unless `storage.save_text = false`. Anyone with access to your user account can
+  with message text and the images and audio it read, unless `storage.save_text = false`. Anyone with access to your user account can
   read them.
 
 [SECURITY.md](SECURITY.md) has the full threat model.
@@ -464,7 +505,7 @@ never passes silently.
 
 - wacli delivers webhooks on a best-effort basis and does not retry, so a message lost on the way is
   not processed.
-- Media is described by type and caption only. Images, audio and documents are not analysed.
+- Videos, stickers and documents are described by type and caption only. Images and audio are read.
 - Edited messages are ignored, so adding `@ane` to a message after sending it does nothing.
 - Batches are processed one at a time. With `-medium` or `-high` models, a burst from many chats can
   take minutes to work through.
@@ -507,6 +548,7 @@ agentic-whatsapp/
 │   ├── usage.ts           # Tokens, prices, costs, periods and limits
 │   ├── report.ts          # agentic-whatsapp costs
 │   ├── tools.ts           # Skills and MCP servers the agent may use
+│   ├── media.ts           # Downloads images and audio and has them described or transcribed
 │   ├── manage.ts          # agentic-whatsapp mcp and skills
 │   └── …                  # config, templates, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables

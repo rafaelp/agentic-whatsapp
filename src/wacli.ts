@@ -10,6 +10,14 @@ export interface WacliClient {
   sendText(to: string, text: string): Promise<string | undefined>;
   /** Most recent stored messages of a chat, newest first. */
   listMessages(chat: string, limit: number): Promise<StoredMessage[]>;
+  /** Downloads the media of a stored message to `output` and returns its size in bytes. */
+  downloadMedia(chat: string, id: string, output: string): Promise<DownloadedMedia>;
+}
+
+export interface DownloadedMedia {
+  path: string;
+  bytes: number;
+  mimeType: string;
 }
 
 /**
@@ -43,6 +51,23 @@ export class Wacli implements WacliClient {
   async listMessages(chat: string, limit: number): Promise<StoredMessage[]> {
     const data = await this.json(['messages', 'list', `--chat=${chat}`, `--limit=${limit}`], 30_000);
     return isRecord(data) && Array.isArray(data.messages) ? (data.messages as StoredMessage[]) : [];
+  }
+
+  /**
+   * In read-only mode wacli fetches the file straight from WhatsApp's media servers with the
+   * keys in its archive, so this works while `sync --follow` holds the store lock.
+   */
+  async downloadMedia(chat: string, id: string, output: string): Promise<DownloadedMedia> {
+    const data = await this.json(
+      ['--read-only', 'media', 'download', `--chat=${chat}`, `--id=${id}`, `--output=${output}`],
+      120_000,
+    );
+    const record = isRecord(data) ? data : {};
+    return {
+      path: asString(record.path) || output,
+      bytes: typeof record.bytes === 'number' ? record.bytes : 0,
+      mimeType: asString(record.mime_type),
+    };
   }
 
   /** Text (or media caption) of one stored message, read-only; null when it cannot be read. */

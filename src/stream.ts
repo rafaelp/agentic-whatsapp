@@ -34,6 +34,8 @@ const KNOWN = new Set([
   'instructions updated',
   'notification for the owner',
   'cost limit reached, skipping',
+  'media read',
+  'media not read',
 ]);
 
 /** Turns agent log entries into one readable line each, for `agentic-whatsapp stream`. */
@@ -110,6 +112,23 @@ export class StreamRenderer {
         color = tools.length > 0 ? paint.blue : paint.dim;
         break;
       }
+      case 'media read': {
+        this.remember(f);
+        const image = f.kind === 'image';
+        body = `${image ? '🖼' : '🎤'} ${this.chatLabel(chat)}: ${image ? 'image described' : 'audio transcribed'}${this.cost(f)}`;
+        color = paint.blue;
+        break;
+      }
+      case 'media not read':
+        this.remember(f);
+        body = `· ${this.chatLabel(chat)}: ${asString(f.kind) || 'media'} not read, ${asString(f.reason)}`;
+        color = paint.dim;
+        break;
+      case 'could not read media':
+        this.remember(f);
+        body = `⚠ could not read the ${asString(f.kind) || 'media'} (${this.chatLabel(chat)}): ${asString(f.error)}`;
+        color = paint.yellow;
+        break;
       case 'cost limit reached, skipping':
         body = `⚠ ${asString(f.period) === '' ? '' : `${asString(f.period)} `}cost limit reached (${this.money(f.spent)} of ${this.money(f.limit)}), skipped ${this.chatLabel(chat)}`;
         color = paint.yellow;

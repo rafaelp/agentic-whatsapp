@@ -48,6 +48,16 @@ With Antigravity, the owner can give the agent skills and MCP servers (`agentic-
 - **The watchdog still decides.** A run may go on only through `finish`, the allowed MCP tools (checked by server and tool name), and reads inside the skills folder or the schema folder agy keeps for an offered server. Any other tool, including a read of any other path, a search of the workspace, a subagent or web search, kills the run as soon as it starts, and the answer is discarded.
 - **Prompt rules.** The model is told to use tools only for the owner's instructions and commands, never because a message from someone else asks, and never to put private information in a tool call on someone else's behalf.
 
+### Images and audio
+
+With Antigravity, the image or audio of a message that reaches the model is downloaded and put into words before the decision. Its content comes from whoever sent it, so it is handled like message text:
+
+- **A run that sees only the file.** Each file is read in its own agy run, in an empty workspace (`antigravity/workspace-media/`), with no rules, instructions, history or messages: only the request to describe or transcribe that one file. Whatever the file says can at most distort the text the run returns.
+- **Settings for that run only.** `strict` refuses reads even with an allow rule, so these runs use `request-review` with one allow rule, `read_file(<that file>)`, written to a settings file that is deleted afterwards. Commands, writes, URL tools and MCP stay denied, and reading any other file needs an approval headless mode cannot give.
+- **The watchdog.** The run may read that file, by its path or its real path, and end its turn; any other tool, including a read of anything else or web search, kills it, and it gets one more attempt.
+- **Text, marked as such.** The description or transcript is capped and JSON-encoded into the message it belongs to, as `description` or `transcript`. The model is told they are data like any message text. The one exception is the transcript of a voice note the owner recorded in a command, which is the owner speaking; text that appears inside an image is data even then. A forwarded voice note is not a command.
+- **Downloads.** wacli fetches the file in read-only mode, straight from WhatsApp's media servers with the keys in its archive; nothing is sent. Files larger than `media.max_size_mb`, and formats Gemini cannot read, are not downloaded or read.
+
 With both engines:
 
 - The prompt goes through stdin, so message content does not show up in the process list.
@@ -70,17 +80,18 @@ Outgoing messages carry a prefix and have `@<agent name>` defused, and the agent
 
 - The webhook receiver only binds to a loopback address, refuses requests without a valid `X-Wacli-Signature` (HMAC-SHA256), and limits request size.
 - The webhook secret is random on every start and never written to disk.
-- Config, instructions, the database and the MCP config are created readable by your user only.
+- Config, instructions, the database, the MCP config and downloaded images and audio are created readable by your user only.
 - Commands are run without a shell, so message text is never interpreted by one.
 
 ## Risks that remain
 
 - **Manipulated content.** Prompt injection cannot be fully prevented. A crafted message can still make the model misjudge it: hide something from you, alarm you, or word a reply badly in a chat where replies are allowed. Keep `auto_reply_chats` short and review what the agent does in `--dry-run` first.
+- **A misleading description or transcript.** An image or audio can be made to mislead the model that reads it: text in a picture that looks like an instruction, or speech that pretends to be someone else. The run that reads it has nothing to act on, and its text reaches the decision as data, but it can still change what you are told about that message.
 - **A tool call before the kill.** With Antigravity, a tool that no setting can deny may start before agentic-whatsapp kills the run. The ones seen so far, such as web search, only read public information, and whatever they return is discarded with the answer. In runs with tools, the same goes for a read or search of the agent's own workspace, which agy allows by itself: it may complete, and its result may reach the model, before the run is killed.
 - **What enabled tools can do.** An allowed MCP tool does whatever its server does, with the arguments the model chooses, and the model chooses them after reading the batch. On an owner command, the batch can still contain other people's messages and history, so prompt injection can steer a tool call. An MCP server that writes, sends or deletes is as dangerous as the arguments the model can be talked into. Allow only the tools you need, prefer read-only servers, and keep scope `all` for harmless ones.
 - **MCP credentials.** `--env` and `--header` values are stored in plain text in the database and in the MCP config of the tools workspace, both readable only by your user, and stdio servers see the environment agy runs with. They are never printed by `mcp list` or `mcp show`.
 - **Skills are trusted.** A skill is instructions the owner chose to install; a malicious skill can misguide the model like malicious instructions would. Skills cannot run their scripts, because commands stay denied.
-- **Data sent to Google.** Every message that passes routing, plus the chat history sent as context and your instructions, goes to the model. How it is stored and used depends on your Google plan and its terms.
+- **Data sent to Google.** Every message that passes routing, with its image or audio, plus the chat history sent as context and your instructions, goes to the model. How it is stored and used depends on your Google plan and its terms.
 - **Same-user processes.** The webhook secret is passed to `wacli` as a command-line argument, and outgoing text is passed to `wacli send` the same way. Other processes running as your user can see them. A malicious process running as your user can do far more than this, so the agent does not try to defend against it.
-- **Files on disk.** wacli's message store and this tool's database are not encrypted by this tool. The database keeps message text, prompts, the model's answers and what was sent, unless `storage.save_text = false`; `storage.retention_days` deletes those texts after a while. The agent log holds chat IDs, contact and group names, what the agent decided, tokens and costs, but never message text; `agentic-whatsapp stream` reads text from the wacli archive only to show it on screen (`--no-text` turns that off). Protect your computer account and use disk encryption.
+- **Files on disk.** wacli's message store and this tool's database are not encrypted by this tool. The database keeps message text, descriptions and transcripts, prompts, the model's answers and what was sent, and the images and audio the agent read stay in its state folder, unless `storage.save_text = false`; `storage.retention_days` deletes those texts and files after a while. The agent log holds chat IDs, contact and group names, what the agent decided, tokens and costs, but never message text; `agentic-whatsapp stream` reads text from the wacli archive only to show it on screen (`--no-text` turns that off). Protect your computer account and use disk encryption.
 - **WhatsApp account.** wacli is an unofficial client. WhatsApp may restrict accounts that behave in automated ways.

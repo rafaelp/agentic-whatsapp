@@ -14,7 +14,9 @@ import {
   type UsageLedger,
 } from './usage.js';
 
-export type Breakdown = 'day' | 'chat' | 'model';
+export type Breakdown = 'day' | 'chat' | 'model' | 'purpose';
+
+const PURPOSES: Record<string, string> = { decision: 'decisions', image: 'images', audio: 'audio' };
 
 export interface ReportOptions {
   /** How many days the breakdown covers, today included. */
@@ -45,6 +47,8 @@ export function costReport(config: Config, ledger: UsageLedger | undefined, now:
   if (options.by === 'day') {
     const found = new Map(groups.map((group) => [group.key, group]));
     groups = days.map((day): Group => found.get(day) ?? { ...EMPTY, key: day, label: day });
+  } else if (options.by === 'purpose') {
+    groups = groups.map((group) => ({ ...group, label: PURPOSES[group.key] ?? group.key }));
   }
 
   const prices = pricesFor(engine.model, costs);

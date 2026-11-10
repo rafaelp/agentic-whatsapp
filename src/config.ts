@@ -75,6 +75,15 @@ export interface StorageConfig {
   retentionDays: number;
 }
 
+export interface MediaConfig {
+  /** Describe images with the model. */
+  images: boolean;
+  /** Transcribe audio and voice notes with the model. */
+  audio: boolean;
+  /** Larger files are not downloaded. */
+  maxBytes: number;
+}
+
 export interface Paths {
   configFile: string;
   instructionsFile: string;
@@ -84,6 +93,8 @@ export interface Paths {
   database: string;
   /** Installed copies of the skills. */
   skillsDir: string;
+  /** Downloaded images and audio, one folder per chat. */
+  mediaDir: string;
   logDir: string;
   /** Everything the agent logs, rotated by size. */
   agentLog: string;
@@ -99,6 +110,7 @@ export interface Config {
   service: ServiceConfig;
   costs: CostsConfig;
   storage: StorageConfig;
+  media: MediaConfig;
   paths: Paths;
 }
 
@@ -267,6 +279,14 @@ export function parseConfig(
     retentionDays: storageSection.integer('retention_days', 0, 0, 36_500),
   };
   storageSection.finish();
+
+  const mediaSection = root.section('media');
+  const media: MediaConfig = {
+    images: mediaSection.boolean('images', true),
+    audio: mediaSection.boolean('audio', true),
+    maxBytes: mediaSection.integer('max_size_mb', 20, 1, 100) * 1024 * 1024,
+  };
+  mediaSection.finish();
   root.finish();
 
   const logDir = location.logDir ?? join(location.stateDir, 'logs');
@@ -278,6 +298,7 @@ export function parseConfig(
     service,
     costs,
     storage,
+    media,
     paths: {
       configFile: location.configFile,
       instructionsFile: join(dirname(location.configFile), 'instructions.md'),
@@ -285,6 +306,7 @@ export function parseConfig(
       healthFile: join(location.stateDir, 'health.json'),
       database: join(location.stateDir, 'agentic-whatsapp.db'),
       skillsDir: join(location.stateDir, 'skills'),
+      mediaDir: join(location.stateDir, 'media'),
       logDir,
       agentLog: join(logDir, 'agent.log'),
       launchdLog: join(logDir, 'launchd.log'),

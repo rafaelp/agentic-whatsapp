@@ -52,6 +52,16 @@ describe('fromWebhookPayload', () => {
     expect(message).toMatchObject({ text: 'olha a foto', mediaType: 'image' });
   });
 
+  it('keeps the MIME type and size of media', () => {
+    const message = fromWebhookPayload({
+      Chat: BOB,
+      ID: '1',
+      Timestamp: '2026-07-25T10:00:00Z',
+      Media: { Type: 'audio', MimeType: 'audio/ogg; codecs=opus', FileLength: 9_120 },
+    });
+    expect(message).toMatchObject({ text: '', mediaType: 'audio', mediaMime: 'audio/ogg; codecs=opus', mediaSize: 9_120 });
+  });
+
   it('flags reactions', () => {
     expect(fromWebhookPayload({ Chat: BOB, ID: '1', ReactionToID: 'X', ReactionEmoji: '👍' })?.reaction).toBe(true);
   });

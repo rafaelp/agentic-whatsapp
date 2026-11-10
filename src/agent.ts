@@ -4,18 +4,22 @@ import type { Config } from './config.js';
 import type { Attempt, DecisionMaker } from './decision.js';
 import type { InstructionsStore } from './instructions.js';
 import type { Logger } from './log.js';
+import type { MediaKind, MediaProcessor } from './media.js';
 import { buildPrompt } from './prompt.js';
 import { type RoutingRules, routeMessage } from './router.js';
 import type { AgentState } from './state.js';
 import { dayKey } from './time.js';
 import type { ToolRegistry } from './tools.js';
 import type { Action, Batch, ChatMessage, Decision } from './types.js';
-import { NO_USAGE, PERIOD_NAMES, type UsageLedger, addUsage, formatMoney } from './usage.js';
+import { type CallContext, NO_USAGE, PERIOD_NAMES, type UsageLedger, addUsage, formatMoney } from './usage.js';
 import { errorMessage } from './util.js';
 import type { WacliClient } from './wacli.js';
 import { fromStoredMessage, fromWebhookPayload } from './whatsapp.js';
 
 const MAX_BATCH_SIZE = 30;
+/** Images and audio read per batch, and how many at a time. */
+const MAX_MEDIA_PER_BATCH = 10;
+const MEDIA_CONCURRENCY = 3;
 
 export interface AgentEvents {
   /** A message passed routing and is waiting for its batch. */
@@ -32,6 +36,8 @@ export interface AgentDeps {
   usage: UsageLedger;
   /** Skills and MCP servers; absent when the engine cannot use them. */
   tools?: ToolRegistry;
+  /** Reads images and audio; absent when the engine cannot, or both are off. */
+  media?: MediaProcessor;
   instructions: InstructionsStore;
   log: Logger;
   dryRun?: boolean;
@@ -159,6 +165,7 @@ export class Agent {
       return;
     }
 
+    batch = await this.readMedia(batch, batchId);
     const tools = this.deps.tools?.forBatch(context.ownerCommand);
     const prompt = buildPrompt({
       agent: config.agent,
@@ -173,26 +180,8 @@ export class Agent {
     let cost = 0;
     let tokens = NO_USAGE;
     const onAttempt = (attempt: Attempt) => {
-      try {
-        const attemptCost = usage.record(attempt, { batchId, chat: batch.chat, chatName: batch.chatName, prompt });
-        cost += attemptCost;
-        tokens = addUsage(tokens, attempt.usage);
-        log.info('model call', {
-          chat: batch.chat,
-          chatName: batch.chatName || undefined,
-          attempt: attempt.attempt,
-          status: attempt.status,
-          seconds: Math.round(attempt.durationMs / 100) / 10,
-          inputTokens: attempt.usage.inputTokens,
-          outputTokens: attempt.usage.outputTokens,
-          cachedTokens: attempt.usage.cachedTokens || undefined,
-          thinkingTokens: attempt.usage.thinkingTokens || undefined,
-          cost: roundCost(attemptCost),
-          tools: attempt.tools.length === 0 ? undefined : attempt.tools,
-        });
-      } catch (error) {
-        log.error('could not record a model call', { chat: batch.chat, error: errorMessage(error) });
-      }
+      cost += this.recordAttempt(attempt, { batchId, chat: batch.chat, chatName: batch.chatName, prompt });
+      tokens = addUsage(tokens, attempt.usage);
     };
 
     let decision: Decision;
@@ -221,6 +210,81 @@ export class Agent {
     state.finishBatch(batchId, { status: 'decided', decision }, this.now());
     await this.execute(decision.actions, context, batchId);
     await this.warnNearLimits(context, batchId);
+  }
+
+  /** Stores one run of the engine and logs it; returns its cost. */
+  private recordAttempt(attempt: Attempt, call: CallContext): number {
+    const { usage, log } = this.deps;
+    try {
+      const cost = usage.record(attempt, call);
+      log.info('model call', {
+        chat: call.chat,
+        chatName: call.chatName || undefined,
+        purpose: call.purpose === undefined || call.purpose === 'decision' ? undefined : call.purpose,
+        attempt: attempt.attempt,
+        status: attempt.status,
+        seconds: Math.round(attempt.durationMs / 100) / 10,
+        inputTokens: attempt.usage.inputTokens,
+        outputTokens: attempt.usage.outputTokens,
+        cachedTokens: attempt.usage.cachedTokens || undefined,
+        thinkingTokens: attempt.usage.thinkingTokens || undefined,
+        cost: roundCost(cost),
+        tools: attempt.tools.length === 0 ? undefined : attempt.tools,
+      });
+      return cost;
+    } catch (error) {
+      log.error('could not record a model call', { chat: call.chat, error: errorMessage(error) });
+      return 0;
+    }
+  }
+
+  /**
+   * Describes the images and transcribes the audio of a batch, a few at a time, and returns
+   * the batch with that text on each message. A file that cannot be read gets a note instead.
+   */
+  private async readMedia(batch: Batch, batchId: number): Promise<Batch> {
+    const { media, state, log } = this.deps;
+    if (media === undefined) return batch;
+    const pending = batch.messages.filter((message) => media.kindOf(message) !== undefined);
+    if (pending.length === 0) return batch;
+
+    const found = new Map<string, Pick<ChatMessage, 'mediaText' | 'mediaNote'>>();
+    for (const message of pending.slice(MAX_MEDIA_PER_BATCH)) found.set(message.id, { mediaNote: 'too many files in one batch' });
+    await forEachLimited(pending.slice(0, MAX_MEDIA_PER_BATCH), MEDIA_CONCURRENCY, async (message) => {
+      const kind = media.kindOf(message) as MediaKind;
+      const call: CallContext = { batchId, chat: batch.chat, chatName: batch.chatName, purpose: kind };
+      let cost = 0;
+      let tokens = NO_USAGE;
+      const result = await media.read(message, {
+        onAttempt: (attempt) => {
+          cost += this.recordAttempt(attempt, call);
+          tokens = addUsage(tokens, attempt.usage);
+        },
+      });
+      if (result === undefined) return;
+      try {
+        state.recordMedia(message.chat, message.id, result);
+      } catch (error) {
+        log.error('could not store a description or transcript', { chat: message.chat, error: errorMessage(error) });
+      }
+      const fields = { chat: batch.chat, chatName: batch.chatName || undefined, id: message.id, kind };
+      if (result.text !== undefined) {
+        log.info('media read', {
+          ...fields,
+          inputTokens: tokens.inputTokens,
+          outputTokens: tokens.outputTokens,
+          cost: roundCost(cost),
+        });
+        found.set(message.id, { mediaText: result.text });
+      } else if (result.skipped !== undefined) {
+        log.info('media not read', { ...fields, reason: result.skipped });
+        found.set(message.id, { mediaNote: result.skipped });
+      } else {
+        log.warn('could not read media', { ...fields, error: result.error, cost: roundCost(cost) });
+        found.set(message.id, { mediaNote: kind === 'image' ? 'could not be described' : 'could not be transcribed' });
+      }
+    });
+    return { ...batch, messages: batch.messages.map((message) => ({ ...message, ...found.get(message.id) })) };
   }
 
   /** Tells the owner, once per period, that a cost limit is nearly used up. */
@@ -264,11 +328,18 @@ export class Agent {
     try {
       const batchIds = new Set(batch.messages.map((message) => message.id));
       const stored = await this.deps.wacli.listMessages(batch.chat, limit + batch.messages.length);
-      return stored
+      const history = stored
         .map(fromStoredMessage)
         .filter((message) => !batchIds.has(message.id) && !message.reaction && !message.revoked)
         .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
         .slice(-limit);
+      // Images and audio read in earlier batches come back with their description or transcript.
+      const withMedia = history.filter((message) => message.mediaType !== '').map((message) => message.id);
+      const texts = withMedia.length === 0 ? new Map<string, string>() : this.deps.state.mediaTexts(batch.chat, withMedia);
+      return history.map((message) => {
+        const mediaText = texts.get(message.id);
+        return mediaText === undefined ? message : { ...message, mediaText };
+      });
     } catch (error) {
       this.deps.log.warn('could not load chat history', { chat: batch.chat, error: errorMessage(error) });
       return [];
@@ -288,4 +359,16 @@ export class Agent {
   private now(): Date {
     return this.deps.now?.() ?? new Date();
   }
+}
+
+/** Runs `fn` over `items`, at most `limit` at a time. */
+async function forEachLimited<T>(items: readonly T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const item = items[next++] as T;
+      await fn(item);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }

@@ -14,12 +14,12 @@ describe('Store', () => {
     const dir = await tempDir();
     const file = join(dir, 'state', 'agentic-whatsapp.db');
     const store = Store.open(file);
-    expect(store.version).toBe(1);
+    expect(store.version).toBe(2);
     store.setMeta('k', 'v');
     store.close();
 
     const again = Store.open(file);
-    expect(again.version).toBe(1);
+    expect(again.version).toBe(2);
     expect(again.meta('k')).toBe('v');
     again.close();
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -133,6 +133,42 @@ describe('AgentState', () => {
     expect(state.store.get('SELECT actions FROM batches')).toEqual({ actions: '[{"type":"reply"}]' });
     expect(state.store.get('SELECT prompt, response FROM calls')).toEqual({ prompt: null, response: null });
     expect(state.pruneText(new Date('2026-06-01T00:00:00Z'))).toBe(0);
+  });
+
+  it('stores what was read from media, and gives it back for the chat history', () => {
+    const state = new AgentState(Store.open(null));
+    state.recordMessage(message({ id: 'V1', mediaType: 'audio', text: '' }), queued, NOW);
+    state.recordMessage(message({ id: 'I1', mediaType: 'image', text: '' }), queued, NOW);
+    state.recordMedia(BOB, 'V1', { kind: 'audio', text: 'oi Ane', file: '/media/V1.ogg' });
+    state.recordMedia(BOB, 'I1', { kind: 'image', skipped: 'too large' });
+
+    expect(state.mediaTexts(BOB, ['V1', 'I1', 'X'])).toEqual(new Map([['V1', 'oi Ane']]));
+    expect(state.store.get("SELECT media_file, media_error FROM messages WHERE id = 'I1'")).toEqual({
+      media_file: null,
+      media_error: 'too large',
+    });
+  });
+
+  it('keeps no description or transcript when save_text is off', () => {
+    const state = new AgentState(Store.open(null), { saveText: false });
+    state.recordMessage(message({ id: 'V1', mediaType: 'audio' }), queued, NOW);
+    state.recordMedia(BOB, 'V1', { kind: 'audio', text: 'oi Ane' });
+    expect(state.mediaTexts(BOB, ['V1']).size).toBe(0);
+  });
+
+  it('deletes old transcripts and hands over old media files', () => {
+    const state = new AgentState(Store.open(null));
+    const old = new Date('2026-01-01T00:00:00Z');
+    state.recordMessage(message({ id: 'V1', mediaType: 'audio', text: '' }), queued, old);
+    state.recordMessage(message({ id: 'V2', mediaType: 'audio', text: '' }), queued, NOW);
+    state.recordMedia(BOB, 'V1', { kind: 'audio', text: 'antigo', file: '/media/V1.ogg' });
+    state.recordMedia(BOB, 'V2', { kind: 'audio', text: 'novo', file: '/media/V2.ogg' });
+
+    const cutoff = new Date('2026-06-01T00:00:00Z');
+    state.pruneText(cutoff);
+    expect(state.mediaTexts(BOB, ['V1', 'V2'])).toEqual(new Map([['V2', 'novo']]));
+    expect(state.takeMediaFiles(cutoff)).toEqual(['/media/V1.ogg']);
+    expect(state.takeMediaFiles(cutoff)).toEqual([]);
   });
 
   it('imports the state.json of earlier versions once', async () => {

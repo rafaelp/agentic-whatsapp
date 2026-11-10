@@ -48,6 +48,26 @@ describe('costReport', () => {
     expect(json.breakdown.groups).toEqual([expect.objectContaining({ key: BOB, label: 'Bob', calls: 3 })]);
   });
 
+  it('breaks costs down by purpose', () => {
+    const ledger = ledgerWithCalls();
+    ledger.record(
+      {
+        attempt: 1,
+        startedAt: NOW,
+        durationMs: 1,
+        status: 'ok',
+        usage: { inputTokens: 20_000, outputTokens: 50, thinkingTokens: 0, cachedTokens: 0 },
+        tools: [],
+      },
+      { chat: BOB, chatName: 'Bob', purpose: 'image' },
+    );
+    const lines = costReport(config, ledger, NOW, { days: 7, by: 'purpose', json: false });
+    expect(lines).toContain('Last 7 day(s), by purpose:');
+    expect(lines.map((line) => line.trim().split(/ +/).slice(0, 2).join(' '))).toEqual(
+      expect.arrayContaining(['decisions 3', 'images 1']),
+    );
+  });
+
   it('says when the model has no known prices', () => {
     const other = makeConfig({ engine: { model: 'gemini-9-pro' } });
     expect(costReport(other, undefined, NOW, { days: 1, by: 'day', json: false })[0]).toMatch(/No known prices for gemini-9-pro/);

@@ -2,11 +2,13 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Agent } from '../src/agent.js';
 import { InstructionsStore } from '../src/instructions.js';
+import { MediaProcessor } from '../src/media.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Action } from '../src/types.js';
 import {
   BOB,
   FakeDecider,
+  FakeReader,
   FakeWacli,
   FAMILY,
   HOME,
@@ -281,5 +283,97 @@ describe('Agent', () => {
     const { decider, deliver } = await setup();
     await deliver({ EventType: 'receipt', Chat: BOB, ID: 'R1' }, { EventType: 'chat_presence', Chat: BOB });
     expect(decider.prompts).toHaveLength(0);
+  });
+
+  describe('with images and audio', () => {
+    async function setupMedia(actions: Action[] = []) {
+      const dir = await tempDir();
+      const config = makeConfig({}, dir);
+      const wacli = new FakeWacli();
+      const decider = new FakeDecider(actions);
+      const reader = new FakeReader();
+      const { store, state, usage } = memoryStore(config);
+      const media = new MediaProcessor({
+        config: config.media,
+        agent: config.agent,
+        dir: join(dir, 'media'),
+        wacli,
+        reader,
+        keepFiles: true,
+      });
+      const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+      const log = new MemoryLogger();
+      const agent = new Agent({ config, wacli, decider, state, usage, media, instructions, log, now: () => NOW });
+      const deliver = async (...payloads: Record<string, unknown>[]) => {
+        for (const item of payloads) agent.handleEvent(item);
+        agent.flushPending();
+        await agent.idle();
+      };
+      return { wacli, decider, reader, store, log, deliver };
+    }
+    const voiceNote = (overrides: Record<string, unknown> = {}) =>
+      payload({ Text: '', Media: { Type: 'audio', MimeType: 'audio/ogg; codecs=opus', FileLength: 9_000 }, ...overrides });
+
+    it('transcribes a voice note before the decision, as the owner speaking in a command', async () => {
+      const { decider, reader, store, log, deliver } = await setupMedia();
+      reader.text = 'Ane, lembra de pagar o condomínio na sexta.';
+      await deliver(voiceNote({ Chat: HOME, FromMe: true, SenderJID: '' }));
+
+      expect(reader.requests.map((request) => request.kind)).toEqual(['audio']);
+      expect(decider.prompts[0]).toContain('"media":"audio"');
+      expect(decider.prompts[0]).toContain('"transcript":"Ane, lembra de pagar o condomínio na sexta."');
+      expect(decider.prompts[0]).toContain('"owner_command":true');
+      const calls = store.all('SELECT purpose, input_tokens AS input FROM calls ORDER BY id');
+      expect(calls).toEqual([
+        { purpose: 'audio', input: 2_000 },
+        { purpose: 'decision', input: 1_000 },
+      ]);
+      expect(log.entries.find((entry) => entry.message === 'media read')?.fields).toMatchObject({ kind: 'audio', inputTokens: 2_000 });
+    });
+
+    it('describes an image and stores the description and the file', async () => {
+      const { decider, store, deliver } = await setupMedia();
+      await deliver(payload({ ID: 'IMG1', Text: '', Media: { Type: 'image', MimeType: 'image/jpeg', Caption: 'olha isso' } }));
+
+      expect(decider.prompts[0]).toContain('"text":"olha isso"');
+      expect(decider.prompts[0]).toContain('"description":"Uma foto de um boleto de R$ 120,00."');
+      const row = store.get('SELECT media_file, media_text, media_error FROM messages WHERE id = ?', 'IMG1');
+      expect(row?.media_text).toBe('Uma foto de um boleto de R$ 120,00.');
+      expect(String(row?.media_file)).toMatch(/IMG1\.jpg$/);
+      expect(row?.media_error).toBeNull();
+    });
+
+    it('decides anyway when the media cannot be read, with a note saying so', async () => {
+      const { decider, reader, log, deliver } = await setupMedia();
+      reader.error = new Error('Antigravity did not answer within 120s');
+      await deliver(payload({ Text: '', Media: { Type: 'image', MimeType: 'image/jpeg' } }));
+
+      expect(decider.prompts[0]).toContain('"media_note":"could not be described"');
+      expect(decider.prompts[0]).not.toContain('"description"');
+      expect(log.has('warn', 'could not read media')).toBe(true);
+    });
+
+    it('notes media it does not read, and leaves other kinds alone', async () => {
+      const { decider, reader, deliver } = await setupMedia();
+      await deliver(
+        payload({ Text: '', Media: { Type: 'audio', MimeType: 'audio/amr' } }),
+        payload({ Text: '', Media: { Type: 'video', MimeType: 'video/mp4' } }),
+      );
+      expect(reader.requests).toEqual([]);
+      expect(decider.prompts[0]).toContain('"media_note":"unsupported format audio/amr"');
+      expect(decider.prompts[0]).toContain('"media":"video"');
+    });
+
+    it('brings back the transcript of an earlier voice note in the chat history', async () => {
+      const { wacli, decider, deliver } = await setupMedia();
+      await deliver(voiceNote({ ID: 'VOICE1' }));
+      wacli.history = [
+        { MsgID: 'VOICE1', ChatJID: BOB, SenderJID: BOB, SenderName: 'Bob', Timestamp: NOW.toISOString(), FromMe: false, MediaType: 'audio' },
+      ];
+      await deliver(payload({ Text: 'e aí?' }));
+
+      const history = decider.prompts[1]?.split('<history>')[1]?.split('</history>')[0] ?? '';
+      expect(history).toContain('"transcript":"Uma foto de um boleto de R$ 120,00."');
+    });
   });
 });

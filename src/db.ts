@@ -140,6 +140,15 @@ const MIGRATIONS = [
     updated_at TEXT NOT NULL
   );
   `,
+  `
+  -- Images and audio the model read: where the file is kept, and the description or transcript.
+  ALTER TABLE messages ADD COLUMN media_file TEXT;
+  ALTER TABLE messages ADD COLUMN media_text TEXT;
+  ALTER TABLE messages ADD COLUMN media_error TEXT;
+
+  -- What a call was for: a decision, or reading an image or audio.
+  ALTER TABLE calls ADD COLUMN purpose TEXT NOT NULL DEFAULT 'decision';
+  `,
 ];
 
 /**

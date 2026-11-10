@@ -31,6 +31,8 @@ export function fromWebhookPayload(payload: unknown): ChatMessage | null {
     fromMe: payload.FromMe === true,
     text: asString(payload.Text) || asString(media.Caption),
     mediaType: asString(media.Type),
+    mediaMime: asString(media.MimeType) || undefined,
+    mediaSize: typeof media.FileLength === 'number' && media.FileLength > 0 ? media.FileLength : undefined,
     forwarded: payload.IsForwarded === true,
     reaction: asString(payload.ReactionToID) !== '',
     edited: payload.Edited === true,
@@ -51,6 +53,7 @@ export interface StoredMessage {
   DisplayText?: string;
   MediaType?: string;
   MediaCaption?: string;
+  MimeType?: string;
   IsForwarded?: boolean;
   ReactionToID?: string;
   Edited?: boolean;
@@ -68,6 +71,7 @@ export function fromStoredMessage(message: StoredMessage): ChatMessage {
     fromMe: message.FromMe === true,
     text: message.Text || message.MediaCaption || message.DisplayText || '',
     mediaType: message.MediaType ?? '',
+    mediaMime: message.MimeType || undefined,
     forwarded: message.IsForwarded === true,
     reaction: (message.ReactionToID ?? '') !== '',
     edited: message.Edited === true,

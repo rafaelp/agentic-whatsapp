@@ -24,6 +24,12 @@ Every version published to npm has a matching `v` tag and GitHub release with th
   They run in a workspace of their own, only the tools you allow can be used, by default only on
   your own commands, and changes apply without a restart. `stream` shows the tools each call used.
 - `check` reports the prices, the cost limits, the enabled skills and MCP servers, and the database.
+- Images and audio: when a message that reaches the model carries one, it is downloaded through wacli
+  and read by the model first, in a run that can read only that file. Images are described, audio and
+  voice notes transcribed, and the decision gets that text with the message and in later history. A
+  voice note you record in the home chat is a command. `[media]` turns images or audio off and sets
+  `max_size_mb`; files go to the `media/` state folder and follow `[storage]`. `stream` shows each
+  file read with its cost, and `costs --by purpose` splits decisions, images and audio.
 
 ### Changed
 

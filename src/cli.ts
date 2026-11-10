@@ -48,7 +48,7 @@ Commands:
   status      Show the service, today's activity and recent errors
   stream      Watch the agent live: messages arriving, decisions, sends (--all, --no-text, --lines N)
   logs        Follow the raw log
-  costs       Tokens and costs of today, this week, this month (--days N, --by day|chat|model, --json)
+  costs       Tokens and costs of today, this week, this month (--days N, --by day|chat|model|purpose, --json)
   mcp         Manage the MCP servers the agent may use (list, add, show, tools, scope, enable, disable, remove)
   skills      Manage the agent's skills (list, add, show, scope, enable, disable, remove)
   print       Print the plist that "install" writes
@@ -152,8 +152,8 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     case 'costs': {
       const by = values.by;
-      if (by !== 'day' && by !== 'chat' && by !== 'model') {
-        process.stderr.write('--by takes day, chat or model\n');
+      if (by !== 'day' && by !== 'chat' && by !== 'model' && by !== 'purpose') {
+        process.stderr.write('--by takes day, chat, model or purpose\n');
         return 2;
       }
       const days = Number.parseInt(values.days, 10);
@@ -303,6 +303,11 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
     store.close();
   }
   report(true, 'database', config.paths.database);
+
+  const kinds = [config.media.images && 'images described', config.media.audio && 'audio transcribed'].filter(Boolean);
+  if (kinds.length === 0) report(true, 'media', 'off: the model sees only the type of images and audio');
+  else if (config.engine.kind !== 'antigravity') note('media', 'only engine.kind = "antigravity" reads images and audio');
+  else report(true, 'media', `${kinds.join(', ')}, up to ${config.media.maxBytes / 1024 / 1024} MB, in ${config.paths.mediaDir}`);
 
   const { engine } = config;
   const label = engineLabel(engine.kind);

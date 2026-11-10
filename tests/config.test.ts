@@ -132,6 +132,16 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ agent: { name: 'Ane' }, storage: { keep: true } }, location)).toThrow(/Unknown setting in \[storage\]/);
   });
 
+  it('reads images and audio by default, up to 20 MB', () => {
+    const defaults = parseConfig({ agent: { name: 'Ane' } }, location);
+    expect(defaults.media).toEqual({ images: true, audio: true, maxBytes: 20 * 1024 * 1024 });
+    expect(defaults.paths.mediaDir).toBe('/home/me/.local/state/aw/media');
+    const off = parseConfig({ agent: { name: 'Ane' }, media: { images: false, audio: false, max_size_mb: 5 } }, location);
+    expect(off.media).toEqual({ images: false, audio: false, maxBytes: 5 * 1024 * 1024 });
+    expect(() => parseConfig({ agent: { name: 'Ane' }, media: { max_size_mb: 0 } }, location)).toThrow(/media.max_size_mb/);
+    expect(() => parseConfig({ agent: { name: 'Ane' }, media: { video: true } }, location)).toThrow(/Unknown setting in \[media\]/);
+  });
+
   it('validates the time zone and the home chat', () => {
     expect(() => parseConfig({ agent: { name: 'Ane', timezone: 'Mars/Base' } }, location)).toThrow(/time zone/);
     expect(() => parseConfig({ agent: { name: 'Ane', home_chat: 'Ane' } }, location)).toThrow(/JIDs/);

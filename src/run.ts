@@ -1,12 +1,14 @@
 import { randomBytes } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Agent } from './agent.js';
 import type { Config } from './config.js';
 import { Store } from './db.js';
-import { createEngine } from './engine.js';
+import { createEngine, mediaReaderOf } from './engine.js';
 import { Health } from './health.js';
 import { InstructionsStore } from './instructions.js';
 import { createLogger, rotateIfLarge } from './log.js';
+import { MediaProcessor } from './media.js';
 import { createNotifier } from './notify.js';
 import { systemPrompt } from './prompt.js';
 import { startReceiver } from './receiver.js';
@@ -71,23 +73,42 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   if (tools === undefined && hasEnabledTools(registry)) {
     log.warn('skills and MCP servers only work with engine.kind = "antigravity"; they are not used');
   }
-  const prune = () => {
+  const prune = async () => {
     if (config.storage.retentionDays === 0) return;
     const before = new Date(Date.now() - config.storage.retentionDays * 86_400_000);
     try {
       const cleared = state.pruneText(before);
       if (cleared > 0) log.info('deleted old texts from the database', { rows: cleared, before: before.toISOString() });
+      const files = state.takeMediaFiles(before);
+      for (const file of files) await rm(file, { force: true });
+      if (files.length > 0) log.info('deleted old images and audio', { files: files.length, before: before.toISOString() });
     } catch (error) {
       log.warn('could not delete old texts', { error: errorMessage(error) });
     }
   };
-  prune();
-  const pruneTimer = setInterval(prune, PRUNE_EVERY_MS);
+  await prune();
+  const pruneTimer = setInterval(() => void prune(), PRUNE_EVERY_MS);
   pruneTimer.unref();
 
   const instructions = new InstructionsStore(paths.instructionsFile, join(paths.stateDir, 'instructions-history'));
   const engine = createEngine(config.engine, paths.stateDir, systemPrompt(config.agent));
   await engine.prepare();
+  const reader = mediaReaderOf(engine);
+  const readsMedia = config.media.images || config.media.audio;
+  if (reader === undefined && readsMedia) {
+    log.info('images and audio are only read with engine.kind = "antigravity"; the model sees just their type');
+  }
+  const media =
+    reader === undefined || !readsMedia
+      ? undefined
+      : new MediaProcessor({
+          config: config.media,
+          agent: config.agent,
+          dir: paths.mediaDir,
+          wacli,
+          reader,
+          keepFiles: config.storage.saveText,
+        });
   const health = new Health(paths.healthFile, notify, config.agent.name);
 
   const agent = new Agent({
@@ -97,6 +118,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     state,
     usage,
     tools,
+    media,
     instructions,
     log,
     dryRun: options.dryRun,
@@ -155,6 +177,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     allowlistedGroups: config.routing.groupAllowlist.length,
     skills: tools?.skills().filter((skill) => skill.enabled).length,
     mcpServers: tools?.servers().filter((server) => server.enabled).length,
+    media: media === undefined ? undefined : [config.media.images && 'images', config.media.audio && 'audio'].filter(Boolean),
   });
 
   await new Promise<void>((resolve) => {

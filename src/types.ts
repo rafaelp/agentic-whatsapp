@@ -11,6 +11,14 @@ export interface ChatMessage {
   fromMe: boolean;
   text: string;
   mediaType: string;
+  /** MIME type of the media, such as "audio/ogg; codecs=opus", when wacli reports it. */
+  mediaMime?: string;
+  /** Size of the media in bytes, when wacli reports it. */
+  mediaSize?: number;
+  /** What the model read from the media: a description of an image or a transcript of audio. */
+  mediaText?: string;
+  /** Why the media was not read, such as "too large". */
+  mediaNote?: string;
   forwarded: boolean;
   reaction: boolean;
   edited: boolean;

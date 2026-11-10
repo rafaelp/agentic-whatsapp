@@ -1,14 +1,15 @@
-import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Config, parseConfig } from '../src/config.js';
 import { Store } from '../src/db.js';
 import type { DecideOptions, DecisionMaker } from '../src/decision.js';
+import type { MediaOptions, MediaReader, MediaRequest } from '../src/media.js';
 import type { LogFields, Logger } from '../src/log.js';
 import { AgentState } from '../src/state.js';
 import type { Action, ChatMessage, Decision } from '../src/types.js';
 import { type Usage, UsageLedger } from '../src/usage.js';
-import type { WacliClient } from '../src/wacli.js';
+import type { DownloadedMedia, WacliClient } from '../src/wacli.js';
 import type { StoredMessage } from '../src/whatsapp.js';
 
 export const HOME = '120363000000000001@g.us';
@@ -69,8 +70,18 @@ export function message(overrides: Partial<ChatMessage> = {}): ChatMessage {
 
 export class FakeWacli implements WacliClient {
   readonly sent: { to: string; text: string }[] = [];
+  readonly downloads: { chat: string; id: string; output: string }[] = [];
   history: StoredMessage[] = [];
   failSends = false;
+  /** What each download writes; null makes it fail. */
+  media: string | null = 'MEDIA BYTES';
+
+  async downloadMedia(chat: string, id: string, output: string): Promise<DownloadedMedia> {
+    this.downloads.push({ chat, id, output });
+    if (this.media === null) throw new Error('media expired');
+    await writeFile(output, this.media);
+    return { path: output, bytes: Buffer.byteLength(this.media), mimeType: '' };
+  }
 
   async sendText(to: string, text: string): Promise<string | undefined> {
     if (this.failSends) throw new Error('send failed');
@@ -117,6 +128,33 @@ export class FakeDecider implements DecisionMaker {
     });
     if (this.error !== undefined) throw this.error;
     return { actions: this.actions, warnings: [] };
+  }
+}
+
+/** Reads media as `text`, reporting one attempt of 2,000 tokens in and 50 out per file. */
+export class FakeReader implements MediaReader {
+  readonly requests: MediaRequest[] = [];
+  /** What each file held when it was read. */
+  readonly contents: string[] = [];
+  error: Error | undefined;
+
+  constructor(public text = 'Uma foto de um boleto de R$ 120,00.') {}
+
+  async readMedia(request: MediaRequest, options: MediaOptions = {}): Promise<string> {
+    this.requests.push(request);
+    this.contents.push(await readFile(request.file, 'utf8'));
+    options.onAttempt?.({
+      attempt: 1,
+      startedAt: NOW,
+      durationMs: 2_000,
+      status: this.error === undefined ? 'ok' : 'failed',
+      error: this.error?.message,
+      usage: { inputTokens: 2_000, outputTokens: 50, thinkingTokens: 0, cachedTokens: 0 },
+      tools: ['read_file'],
+      response: this.error === undefined ? this.text : undefined,
+    });
+    if (this.error !== undefined) throw this.error;
+    return this.text;
   }
 }
 
