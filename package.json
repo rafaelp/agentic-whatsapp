@@ -1,0 +1,57 @@
+{
+  "name": "@rafaelp/agentic-whatsapp",
+  "version": "0.1.0",
+  "description": "An AI assistant that reads your WhatsApp and tells you what matters: wacli keeps your account in sync, Antigravity CLI decides on your Google AI plan, and you set the rules from WhatsApp.",
+  "license": "MIT",
+  "author": "Rafael Lima",
+  "type": "module",
+  "bin": {
+    "agentic-whatsapp": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rafaelp/agentic-whatsapp.git"
+  },
+  "homepage": "https://github.com/rafaelp/agentic-whatsapp#readme",
+  "bugs": "https://github.com/rafaelp/agentic-whatsapp/issues",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "whatsapp",
+    "agent",
+    "assistant",
+    "ai",
+    "gemini",
+    "antigravity",
+    "gemini-cli",
+    "wacli",
+    "launchd",
+    "automation"
+  ],
+  "dependencies": {
+    "smol-toml": "^1.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

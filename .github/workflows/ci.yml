@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+
+  package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install the packed npm package globally
+        run: |
+          npm pack
+          npm install -g ./rafaelp-agentic-whatsapp-*.tgz
+          agentic-whatsapp --version
+          agentic-whatsapp help
+      - name: init writes a config that check can read
+        env:
+          AGENTIC_WHATSAPP_CONFIG: ${{ runner.temp }}/config/config.toml
+        run: |
+          agentic-whatsapp init --name Ane --language en
+          grep -q 'name = "Ane"' "$AGENTIC_WHATSAPP_CONFIG"
+          # wacli and agy are not installed here, so check fails; the config line must still pass.
+          (agentic-whatsapp check || true) | grep -q 'agent "Ane"'
+      - name: Generated launchd plist is valid
+        run: agentic-whatsapp launchd | plutil -lint -

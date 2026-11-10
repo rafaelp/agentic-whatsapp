@@ -1,0 +1,280 @@
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { parse } from 'smol-toml';
+import { isValidTimeZone, systemTimeZone } from './time.js';
+import { errorMessage, isNotFound, isRecord } from './util.js';
+
+export interface AgentConfig {
+  name: string;
+  language: string;
+  timezone: string;
+  homeChat: string;
+  messagePrefix: string;
+}
+
+export interface RoutingConfig {
+  directMessages: boolean;
+  groupAllowlist: string[];
+  autoReplyChats: string[];
+  debounceSeconds: number;
+  maxMessageAgeMinutes: number;
+}
+
+export type EngineKind = 'antigravity' | 'gemini-cli';
+
+const ENGINE_DEFAULTS: Record<EngineKind, { command: string; model: string }> = {
+  // -low answered 5 to 7 times faster than -medium with the same decisions in testing.
+  antigravity: { command: 'agy', model: 'gemini-3.8-flash-low' },
+  'gemini-cli': { command: 'gemini', model: 'gemini-3.8-flash' },
+};
+
+export interface EngineConfig {
+  kind: EngineKind;
+  command: string;
+  model: string;
+  timeoutSeconds: number;
+  maxCallsPerDay: number;
+  contextMessages: number;
+  extraArgs: string[];
+}
+
+export interface WacliConfig {
+  command: string;
+  store: string;
+  listenHost: string;
+  listenPort: number;
+  syncArgs: string[];
+}
+
+export interface Paths {
+  configFile: string;
+  instructionsFile: string;
+  stateDir: string;
+}
+
+export interface Config {
+  agent: AgentConfig;
+  routing: RoutingConfig;
+  engine: EngineConfig;
+  wacli: WacliConfig;
+  paths: Paths;
+}
+
+export class ConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConfigError';
+  }
+}
+
+export const AGENT_NAME_PATTERN = /^[\p{L}\p{N}_-]{2,32}$/u;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+
+export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.AGENTIC_WHATSAPP_CONFIG) return env.AGENTIC_WHATSAPP_CONFIG;
+  const base = env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return join(base, 'agentic-whatsapp', 'config.toml');
+}
+
+export function defaultStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.AGENTIC_WHATSAPP_STATE_DIR) return env.AGENTIC_WHATSAPP_STATE_DIR;
+  const base = env.XDG_STATE_HOME || join(homedir(), '.local', 'state');
+  return join(base, 'agentic-whatsapp');
+}
+
+export function defaultMessagePrefix(name: string): string {
+  return `🤖 ${name}: `;
+}
+
+export async function loadConfig(
+  configFile: string = defaultConfigPath(),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Config> {
+  let text: string;
+  try {
+    text = await readFile(configFile, 'utf8');
+  } catch (error) {
+    if (isNotFound(error)) {
+      throw new ConfigError(
+        `No config file at ${configFile}. Create one with: agentic-whatsapp init --name <name>`,
+      );
+    }
+    throw error;
+  }
+
+  let raw: unknown;
+  try {
+    raw = parse(text);
+  } catch (error) {
+    throw new ConfigError(`Invalid TOML in ${configFile}: ${errorMessage(error)}`);
+  }
+  return parseConfig(raw, { configFile, stateDir: defaultStateDir(env) });
+}
+
+export function parseConfig(raw: unknown, location: { configFile: string; stateDir: string }): Config {
+  if (!isRecord(raw)) throw new ConfigError('The config file must be a TOML table');
+  const root = new Section(raw, '');
+
+  const agentSection = root.section('agent');
+  const name = agentSection.string('name').trim();
+  if (!AGENT_NAME_PATTERN.test(name)) {
+    throw new ConfigError(
+      `agent.name must be 2 to 32 letters, digits, "_" or "-" (got ${JSON.stringify(name)})`,
+    );
+  }
+  const timezone = agentSection.string('timezone', systemTimeZone()).trim();
+  if (!isValidTimeZone(timezone)) {
+    throw new ConfigError(`agent.timezone is not a valid IANA time zone: ${JSON.stringify(timezone)}`);
+  }
+  const homeChat = agentSection.string('home_chat', '').trim();
+  if (homeChat !== '') requireJid(homeChat, 'agent.home_chat');
+  const agent: AgentConfig = {
+    name,
+    language: agentSection.string('language', 'en').trim(),
+    timezone,
+    homeChat,
+    messagePrefix: agentSection.string('message_prefix', defaultMessagePrefix(name)),
+  };
+  agentSection.finish();
+
+  const routingSection = root.section('routing');
+  const routing: RoutingConfig = {
+    directMessages: routingSection.boolean('direct_messages', true),
+    groupAllowlist: routingSection.strings('group_allowlist', []),
+    autoReplyChats: routingSection.strings('auto_reply_chats', []),
+    debounceSeconds: routingSection.integer('debounce_seconds', 15, 0, 600),
+    maxMessageAgeMinutes: routingSection.integer('max_message_age_minutes', 60, 0, 10_080),
+  };
+  for (const group of routing.groupAllowlist) {
+    if (!group.endsWith('@g.us')) {
+      throw new ConfigError(
+        `routing.group_allowlist takes group JIDs ending in @g.us, and ${JSON.stringify(group)} is not one. ` +
+          'Group names are not accepted because anyone in a group can rename it. List your groups with: wacli groups list',
+      );
+    }
+  }
+  for (const chat of routing.autoReplyChats) requireJid(chat, 'routing.auto_reply_chats');
+  routingSection.finish();
+
+  const engineSection = root.section('engine');
+  const kind = engineSection.string('kind', 'antigravity').trim();
+  if (kind !== 'antigravity' && kind !== 'gemini-cli') {
+    throw new ConfigError(`engine.kind must be "antigravity" or "gemini-cli", got ${JSON.stringify(kind)}`);
+  }
+  const engine: EngineConfig = {
+    kind,
+    command: engineSection.string('command', ENGINE_DEFAULTS[kind].command),
+    model: engineSection.string('model', ENGINE_DEFAULTS[kind].model),
+    timeoutSeconds: engineSection.integer('timeout_seconds', 120, 10, 600),
+    maxCallsPerDay: engineSection.integer('max_calls_per_day', 300, 1, 100_000),
+    contextMessages: engineSection.integer('context_messages', 20, 0, 100),
+    extraArgs: engineSection.strings('extra_args', []),
+  };
+  engineSection.finish();
+
+  const wacliSection = root.section('wacli');
+  const wacli: WacliConfig = {
+    command: wacliSection.string('command', 'wacli'),
+    store: wacliSection.string('store', ''),
+    listenHost: wacliSection.string('listen_host', '127.0.0.1'),
+    listenPort: wacliSection.integer('listen_port', 0, 0, 65_535),
+    syncArgs: wacliSection.strings('sync_args', []),
+  };
+  if (!LOOPBACK_HOSTS.has(wacli.listenHost)) {
+    throw new ConfigError(
+      `wacli.listen_host must be a loopback address (127.0.0.1, ::1 or localhost), got ${JSON.stringify(wacli.listenHost)}`,
+    );
+  }
+  wacliSection.finish();
+  root.finish();
+
+  return {
+    agent,
+    routing,
+    engine,
+    wacli,
+    paths: {
+      configFile: location.configFile,
+      instructionsFile: join(dirname(location.configFile), 'instructions.md'),
+      stateDir: location.stateDir,
+    },
+  };
+}
+
+function requireJid(value: string, setting: string): void {
+  if (!value.includes('@')) {
+    throw new ConfigError(
+      `${setting} takes chat JIDs such as 120363000000000000@g.us or 5511999999999@s.whatsapp.net, got ${JSON.stringify(value)}`,
+    );
+  }
+}
+
+/** One TOML table. Tracks which keys were read so unknown (misspelled) keys are rejected. */
+class Section {
+  private readonly used = new Set<string>();
+
+  constructor(
+    private readonly table: Record<string, unknown>,
+    private readonly path: string,
+  ) {}
+
+  section(key: string): Section {
+    const value = this.read(key);
+    if (value === undefined) return new Section({}, this.label(key));
+    if (!isRecord(value)) throw new ConfigError(`[${this.label(key)}] must be a table`);
+    return new Section(value, this.label(key));
+  }
+
+  string(key: string, fallback?: string): string {
+    const value = this.read(key);
+    if (value === undefined) {
+      if (fallback === undefined) throw new ConfigError(`${this.label(key)} is required`);
+      return fallback;
+    }
+    if (typeof value !== 'string') throw new ConfigError(`${this.label(key)} must be a string`);
+    return value;
+  }
+
+  boolean(key: string, fallback: boolean): boolean {
+    const value = this.read(key);
+    if (value === undefined) return fallback;
+    if (typeof value !== 'boolean') throw new ConfigError(`${this.label(key)} must be true or false`);
+    return value;
+  }
+
+  integer(key: string, fallback: number, min: number, max: number): number {
+    const value = this.read(key);
+    if (value === undefined) return fallback;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+      throw new ConfigError(`${this.label(key)} must be a whole number from ${min} to ${max}`);
+    }
+    return value;
+  }
+
+  strings(key: string, fallback: string[]): string[] {
+    const value = this.read(key);
+    if (value === undefined) return fallback;
+    if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+      throw new ConfigError(`${this.label(key)} must be a list of strings`);
+    }
+    return value.map((item: string) => item.trim()).filter((item) => item !== '');
+  }
+
+  finish(): void {
+    const unknown = Object.keys(this.table).filter((key) => !this.used.has(key));
+    if (unknown.length > 0) {
+      const where = this.path === '' ? 'the config file' : `[${this.path}]`;
+      throw new ConfigError(`Unknown setting in ${where}: ${unknown.join(', ')}`);
+    }
+  }
+
+  private read(key: string): unknown {
+    this.used.add(key);
+    return this.table[key];
+  }
+
+  private label(key: string): string {
+    return this.path === '' ? key : `${this.path}.${key}`;
+  }
+}

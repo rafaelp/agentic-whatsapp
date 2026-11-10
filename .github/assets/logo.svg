@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 628 128" width="628" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1fbf75"/>
+      <stop offset="1" stop-color="#0d8a52"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="32" fill="url(#bg)"/>
+  <path d="M20 38a16 16 0 0 1 16-16h48a16 16 0 0 1 16 16v28a16 16 0 0 1-16 16H50l-16 14v-14.5A16 16 0 0 1 20 66z" fill="#fff"/>
+  <text x="60" y="66" text-anchor="middle" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-size="42" font-weight="700" fill="#0d8a52">@</text>
+  <circle cx="92" cy="92" r="23" fill="#fff" stroke="#0d8a52" stroke-width="5"/>
+  <path d="M92 77c1.6 7.7 6.3 12.4 14 14c-7.7 1.6-12.4 6.3-14 14c-1.6-7.7-6.3-12.4-14-14c7.7-1.6 12.4-6.3 14-14z" fill="#0d8a52"/>
+  <text x="150" y="84" font-family="Avenir Next, Avenir, Helvetica Neue, Arial, sans-serif" font-size="58" letter-spacing="-0.5"><tspan fill="#59636e" font-weight="400">agentic-</tspan><tspan fill="#1f2328" font-weight="600">whatsapp</tspan></text>
+</svg>

@@ -1,0 +1,22 @@
+# systemd user unit for agentic-whatsapp.
+#
+#   cp contrib/systemd/agentic-whatsapp.service ~/.config/systemd/user/
+#   # adjust ExecStart and PATH below
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now agentic-whatsapp
+#   journalctl --user -u agentic-whatsapp -f
+
+[Unit]
+Description=agentic-whatsapp personal WhatsApp agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/env agentic-whatsapp run
+# wacli and gemini must be on this PATH.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

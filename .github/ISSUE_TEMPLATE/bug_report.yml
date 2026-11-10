@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in agentic-whatsapp does not work as documented
+labels: [bug]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Routing (which messages reach the model)
+        - Decisions or actions
+        - Engine (Antigravity CLI or Gemini CLI)
+        - wacli sync or sending
+        - Setup, config or background service
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From `agentic-whatsapp run --verbose` or `~/Library/Logs/agentic-whatsapp.log`. Remove phone numbers, chat IDs, names and message text.
+      render: text
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: macOS 26.1, Node 24.11.0, wacli 0.26.0, agy 1.5.3, agentic-whatsapp 0.1.0
+    validations:
+      required: true
