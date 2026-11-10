@@ -61,6 +61,12 @@ export class Agent {
     const message = fromWebhookPayload(payload);
     if (message === null) return;
     const { state, log } = this.deps;
+    // A message can arrive first without content (e.g. only the group key it carries) and again,
+    // with the same ID, once wacli has its text. Only messages with content count as seen.
+    if (message.text.trim() === '' && message.mediaType === '') {
+      log.debug('skipped message', { chat: message.chat, id: message.id, reason: 'no content' });
+      return;
+    }
     if (!state.markSeen(`${message.chat}/${message.id}`)) {
       log.debug('duplicate message', { chat: message.chat, id: message.id });
       return;

@@ -82,10 +82,14 @@ setInterval(() => {}, 1000);`,
     const log = new MemoryLogger();
     const supervisor = new SyncSupervisor(new Wacli(command, ''), ['sync', '--follow'], log);
     supervisor.start();
-    await expect
-      .poll(() => log.entries.some((entry) => entry.message.includes('sync --follow')), { timeout: 10_000 })
-      .toBe(true);
-    await supervisor.stop();
+    try {
+      await expect
+        .poll(() => log.entries.some((entry) => entry.message.includes('sync --follow')), { timeout: 10_000 })
+        .toBe(true);
+    } finally {
+      // Never leave the fake wacli running, even when the assertion fails.
+      await supervisor.stop();
+    }
     expect(log.has('warn', 'wacli sync stopped, restarting')).toBe(false);
   });
 
@@ -104,8 +108,11 @@ process.exit(3);`,
       onExit: ({ code, lastLine }) => exits.push({ code, lastLine }),
     });
     supervisor.start();
-    await expect.poll(() => exits.length, { timeout: 10_000 }).toBeGreaterThan(0);
-    await supervisor.stop();
+    try {
+      await expect.poll(() => exits.length, { timeout: 10_000 }).toBeGreaterThan(0);
+    } finally {
+      await supervisor.stop();
+    }
     expect(exits[0]).toEqual({ code: 3, lastLine: 'error: not authenticated; run wacli auth' });
     expect(log.has('warn', 'wacli sync stopped, restarting')).toBe(true);
   });
@@ -121,8 +128,11 @@ process.exit(3);`,
       healthyAfterMs: 50,
     });
     supervisor.start();
-    await expect.poll(() => healthy, { timeout: 10_000 }).toBe(1);
-    await supervisor.stop();
+    try {
+      await expect.poll(() => healthy, { timeout: 10_000 }).toBe(1);
+    } finally {
+      await supervisor.stop();
+    }
   });
 });
 

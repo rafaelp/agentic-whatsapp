@@ -142,6 +142,17 @@ describe('Agent', () => {
     expect(history).not.toContain('mensagem nova');
   });
 
+  it('processes a message that arrives empty first and again with its text', async () => {
+    const { decider, deliver } = await setup();
+    // The first message from a device in a group: the group key alone, then the text, same ID.
+    const empty = payload({ Chat: HOME, FromMe: true, Text: '' });
+    await deliver(empty);
+    await deliver({ ...empty, Text: 'Oi' });
+    await deliver({ ...empty, Text: 'Oi' });
+    expect(decider.prompts).toHaveLength(1);
+    expect(decider.prompts[0]).toContain('"text":"Oi"');
+  });
+
   it('handles each message only once', async () => {
     const { decider, deliver } = await setup();
     const same = payload({ Text: 'oi' });
