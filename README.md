@@ -8,7 +8,7 @@
 <p align="center">
   <strong>An AI assistant that reads your WhatsApp and tells you what matters.</strong><br>
   Listen · Decide · Act<br>
-  <sub>A WhatsApp agent for your own computer, running on the Google AI plan you already have</sub>
+  <sub>A WhatsApp agent for your own computer, running on the Google AI plan you already have, plus a Claude Code plugin</sub>
 </p>
 
 <p align="center">
@@ -40,6 +40,8 @@ help in a conversation, you call it like a person: `@ane`.
   saved in a file you can read and edit.
 - **No API key, no token bill.** It runs on [Antigravity CLI](https://antigravity.google/docs/getting-started?tab=cli)
   with the Google account you already have, in about ten seconds per decision.
+- **WhatsApp inside Claude Code, too.** The `whatsapp` plugin adds a `/whatsapp` command that runs
+  any wacli command, and teaches Claude to read, search and send safely.
 
 ```text
 Carla (building manager), in a private chat:
@@ -140,6 +142,31 @@ npm link        # puts agentic-whatsapp on your PATH
 ```
 
 </details>
+
+## Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace. In Claude Code:
+
+```text
+/plugin marketplace add rafaelp/agentic-whatsapp
+/plugin install whatsapp@agentic-whatsapp
+```
+
+| Skill | Use | What it does |
+| --- | --- | --- |
+| `wacli` | Loaded automatically when you ask about your WhatsApp | Every wacli command and its traps: reads with `--read-only`, names resolved to chat IDs before anything is sent, and what works while a sync is running |
+| `whatsapp` | `/whatsapp [command] [args...]` | Runs any wacli command. Reads run right away; sends, account changes and deletions are confirmed first |
+
+```text
+> /whatsapp chats list --unread
+> /whatsapp messages search "invoice" --after 2026-11-01
+> /whatsapp send text --to "Bob" --message "Running 10 min late"
+> what did the school group say about Friday?
+```
+
+The plugin only needs wacli, and works with or without the agent. See the
+[plugin README](plugins/whatsapp/README.md) and its
+[reference of every wacli command](plugins/whatsapp/skills/wacli/commands.md).
 
 ## Talking to Ane
 
@@ -296,8 +323,16 @@ never passes silently.
 
 ```text
 agentic-whatsapp/
+├── .claude-plugin/
+│   └── marketplace.json   # Claude Code marketplace manifest
 ├── .github/               # CI, issue and pull request templates, logo
 ├── contrib/systemd/       # systemd user unit for Linux
+├── plugins/
+│   └── whatsapp/          # Claude Code plugin
+│       ├── .claude-plugin/plugin.json
+│       └── skills/
+│           ├── whatsapp/      # /whatsapp [command]
+│           └── wacli/         # How to use wacli, plus commands.md with every command
 ├── src/
 │   ├── cli.ts             # The agentic-whatsapp command
 │   ├── run.ts             # Starts the receiver and wacli sync, stops cleanly

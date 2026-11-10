@@ -1,0 +1,19 @@
+{
+  "name": "agentic-whatsapp",
+  "owner": {
+    "name": "Rafael Lima"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for working with WhatsApp from the terminal"
+  },
+  "plugins": [
+    {
+      "name": "whatsapp",
+      "source": "./plugins/whatsapp",
+      "description": "Teaches Claude the wacli WhatsApp CLI and adds a /whatsapp command that runs any wacli command",
+      "version": "0.1.0",
+      "category": "productivity",
+      "keywords": ["whatsapp", "wacli", "messaging", "cli"]
+    }
+  ]
+}

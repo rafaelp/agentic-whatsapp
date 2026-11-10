@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code plugin marketplace with the `whatsapp` plugin: a `/whatsapp [command]` skill that runs
+  any wacli command, confirming sends, account changes and deletions first, and a `wacli` skill with
+  a reference of every wacli command.
+
 ## [0.1.0]
 
 ### Added
