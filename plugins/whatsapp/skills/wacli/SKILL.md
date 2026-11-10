@@ -142,8 +142,9 @@ Only one process at a time can own the archive. While `sync --follow` runs:
   `contacts check|save` are handed to the running sync automatically.
 - Everything else that writes or connects (`send status`, groups, channels, profile, media,
   `history`, deletions, cleanup, `doctor --connect`) fails with a lock error. Tell the user. If the
-  running sync is the agentic-whatsapp agent, stopping it pauses the assistant, so ask before doing
-  it.
+  running sync is the agentic-whatsapp agent (`agentic-whatsapp status` shows it), stopping it
+  pauses the assistant, so ask before doing it. With the user's go-ahead: `agentic-whatsapp stop`,
+  run the command, then `agentic-whatsapp start`.
 
 ## Privacy
 

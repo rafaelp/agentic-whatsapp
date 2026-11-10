@@ -1,54 +1,63 @@
 #!/usr/bin/env node
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { AGENT_NAME_PATTERN, ConfigError, defaultConfigPath, loadConfig } from './config.js';
 import { createEngine, engineLabel } from './engine.js';
-import { launchdPlist } from './launchd.js';
+import { createLogger } from './log.js';
+import { createNotifier } from './notify.js';
 import { runProcess } from './process.js';
 import { systemPrompt } from './prompt.js';
-import { runAgent } from './run.js';
+import { runAgent, StartupError } from './run.js';
+import { followLog, install, plistFor, restart, start, statusLines, stop, uninstall } from './service.js';
+import { stream } from './stream.js';
 import { configTemplate, instructionsTemplate } from './templates.js';
 import { systemTimeZone } from './time.js';
 import { errorMessage } from './util.js';
 import { Wacli } from './wacli.js';
 
-const HELP = `agentic-whatsapp: a personal WhatsApp agent powered by wacli and Antigravity CLI
+const usage = (version: string) => `agentic-whatsapp ${version}: an AI assistant that reads your WhatsApp and tells you what matters
 
-Usage:
-  agentic-whatsapp init --name <name> [--language <lang>] [--home-chat <jid>] [--force]
-  agentic-whatsapp check [--call]
-  agentic-whatsapp run [--dry-run] [--verbose]
-  agentic-whatsapp launchd
-  agentic-whatsapp help | --version
+Usage: agentic-whatsapp <command> [options]
 
 Commands:
-  init      Create the config file and the instructions file
-  check     Check the config, wacli and the engine (--call also makes one real model call)
-  run       Run the agent in the foreground until Ctrl+C
-  launchd   Print a macOS launchd agent that keeps "run" alive
+  init        Create the config and instructions files (--name <name>, --language, --home-chat, --force)
+  check       Check the config, wacli and the engine (--call also makes one real model call)
+  run         Run the agent in the foreground until Ctrl+C (--dry-run, --verbose)
+  install     Install and start the background service (macOS launchd)
+  uninstall   Stop the service and delete its plist
+  start       Start the installed service
+  stop        Stop the service until the next start or login
+  restart     Restart the service, e.g. after changing the config
+  status      Show the service, today's activity and recent errors
+  stream      Watch the agent live: messages arriving, decisions, sends (--all, --no-text, --lines N)
+  logs        Follow the raw log
+  print       Print the plist that "install" writes
+  help        Show this help
+  version     Show the version
 
 Options:
   --config <file>   Config file (default: ${defaultConfigPath()})
-  --dry-run         Decide, but log actions instead of sending or saving them
-  --verbose         Also log skipped messages and wacli progress
+
+Settings live in the config file; see https://github.com/rafaelp/agentic-whatsapp#configuration
 `;
 
 async function main(argv: string[]): Promise<number> {
   const [command = 'help', ...rest] = argv;
-  if (command === '--version' || command === '-v' || command === 'version') {
-    process.stdout.write(`${await packageVersion()}\n`);
+  const version = await packageVersion();
+  if (command === 'version' || command === '--version' || command === '-v') {
+    process.stdout.write(`${version}\n`);
     return 0;
   }
   if (command === 'help' || command === '--help' || command === '-h') {
-    process.stdout.write(HELP);
+    process.stdout.write(usage(version));
     return 0;
   }
 
   const { values } = parseArgs({
     args: rest,
     strict: true,
+    allowNegative: true,
     options: {
       config: { type: 'string' },
       name: { type: 'string' },
@@ -58,9 +67,14 @@ async function main(argv: string[]): Promise<number> {
       call: { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
       verbose: { type: 'boolean', default: false },
+      service: { type: 'boolean', default: false },
+      all: { type: 'boolean', default: false },
+      text: { type: 'boolean', default: true },
+      lines: { type: 'string', default: '20' },
     },
   });
   const configFile = resolve(values.config ?? defaultConfigPath());
+  const print = (lines: string[]) => process.stdout.write(`${lines.join('\n')}\n`);
 
   switch (command) {
     case 'init':
@@ -73,21 +87,63 @@ async function main(argv: string[]): Promise<number> {
     case 'check':
       return check(configFile, values.call);
     case 'run':
-      await runAgent(await loadConfig(configFile), { dryRun: values['dry-run'], verbose: values.verbose });
+      return run(configFile, { dryRun: values['dry-run'], verbose: values.verbose, service: values.service });
+    case 'install':
+      print(await install(await loadConfig(configFile)));
       return 0;
+    case 'uninstall':
+      print(uninstall());
+      return 0;
+    case 'start':
+      print(start());
+      return 0;
+    case 'stop':
+      print(stop());
+      return 0;
+    case 'restart':
+      print(restart());
+      return 0;
+    case 'status':
+      print(await statusLines(await loadConfig(configFile)));
+      return 0;
+    case 'stream': {
+      const lines = Number.parseInt(values.lines, 10);
+      await stream(await loadConfig(configFile), {
+        all: values.all,
+        text: values.text,
+        verbose: values.verbose,
+        lines: Number.isFinite(lines) ? lines : 20,
+        color: process.stdout.isTTY === true && process.env.NO_COLOR === undefined,
+      });
+      return 0;
+    }
+    case 'logs':
+      followLog(await loadConfig(configFile));
+      return 0;
+    case 'print':
     case 'launchd':
-      process.stdout.write(
-        launchdPlist({
-          node: process.execPath,
-          script: fileURLToPath(import.meta.url),
-          configFile,
-          path: process.env.PATH ?? '/usr/bin:/bin',
-        }),
-      );
+      process.stdout.write(plistFor(await loadConfig(configFile)));
       return 0;
     default:
-      process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);
+      process.stderr.write(`Unknown command: ${command}\n\n${usage(version)}`);
       return 2;
+  }
+}
+
+async function run(
+  configFile: string,
+  options: { dryRun: boolean; verbose: boolean; service: boolean },
+): Promise<number> {
+  try {
+    await runAgent(await loadConfig(configFile), options);
+    return 0;
+  } catch (error) {
+    if (!options.service || !(error instanceof ConfigError || error instanceof StartupError)) throw error;
+    // launchd restarts the service when it fails; a problem the user has to fix would only
+    // loop. Say so, and exit cleanly so it stays down until "agentic-whatsapp restart".
+    const notify = createNotifier(createLogger(), true);
+    notify('agentic-whatsapp could not start', errorMessage(error));
+    return 0;
   }
 }
 
@@ -130,6 +186,7 @@ Next steps:
   1. Create a WhatsApp group with only you in it, for ${name} to talk to you.
   2. Find its JID with "wacli groups list" and set agent.home_chat in the config.
   3. Run "agentic-whatsapp check", then "agentic-whatsapp run --dry-run".
+  4. When it looks right, "agentic-whatsapp install" keeps it running in the background.
 `);
   return 0;
 }
@@ -204,6 +261,7 @@ async function exists(file: string): Promise<boolean> {
   }
 }
 
+/** package.json sits one level up both from src/ (checkout) and from dist/ (npm install). */
 async function packageVersion(): Promise<string> {
   const file = new URL('../package.json', import.meta.url);
   const pkg = JSON.parse(await readFile(file, 'utf8')) as { version?: string };
@@ -215,7 +273,7 @@ main(process.argv.slice(2)).then(
     process.exitCode = code;
   },
   (error: unknown) => {
-    process.stderr.write(`${error instanceof ConfigError ? error.message : errorMessage(error)}\n`);
+    process.stderr.write(`agentic-whatsapp: ${error instanceof ConfigError ? error.message : errorMessage(error)}\n`);
     process.exitCode = 1;
   },
 );

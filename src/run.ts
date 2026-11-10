@@ -3,11 +3,14 @@ import { join } from 'node:path';
 import { Agent } from './agent.js';
 import type { Config } from './config.js';
 import { createEngine } from './engine.js';
+import { Health } from './health.js';
 import { InstructionsStore } from './instructions.js';
-import { createLogger } from './log.js';
+import { createLogger, rotateIfLarge } from './log.js';
+import { createNotifier } from './notify.js';
 import { systemPrompt } from './prompt.js';
 import { startReceiver } from './receiver.js';
 import { AgentState } from './state.js';
+import { errorMessage } from './util.js';
 import { SyncSupervisor, Wacli } from './wacli.js';
 
 const DRAIN_TIMEOUT_MS = 15_000;
@@ -15,29 +18,71 @@ const DRAIN_TIMEOUT_MS = 15_000;
 export interface RunOptions {
   dryRun: boolean;
   verbose: boolean;
+  /** Started by launchd: log to the log file only, and raise macOS notifications. */
+  service: boolean;
+}
+
+/** Something the user has to fix before the agent can start. The service does not retry it. */
+export class StartupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StartupError';
+  }
 }
 
 /**
  * Runs the agent until SIGINT or SIGTERM: a webhook receiver on localhost, then
  * `wacli sync --follow` pointed at it. The webhook secret is random on every start,
- * so it is never stored anywhere.
+ * so it is never stored anywhere. Everything is logged to the agent log, which
+ * `agentic-whatsapp stream` and `logs` follow.
  */
 export async function runAgent(config: Config, options: RunOptions): Promise<void> {
-  const log = createLogger({ verbose: options.verbose });
-  const { stateDir } = config.paths;
+  const { paths, service } = config;
+  if (options.service) rotateIfLarge(paths.launchdLog, service.logMaxBytes, service.logKeep);
+  const log = createLogger({
+    verbose: options.verbose,
+    stderr: !options.service,
+    file: { path: paths.agentLog, maxBytes: service.logMaxBytes, keep: service.logKeep },
+  });
+  const notify = createNotifier(log, options.service && service.notify);
 
   const wacli = new Wacli(config.wacli.command, config.wacli.store);
-  const auth = await wacli.authStatus();
+  let auth;
+  try {
+    auth = await wacli.authStatus();
+  } catch (error) {
+    throw new StartupError(errorMessage(error));
+  }
   if (!auth.authenticated) {
-    throw new Error(`wacli is not authenticated. Run "wacli auth" first.\n${auth.detail}`);
+    throw new StartupError(`WhatsApp is not linked. Run "wacli auth", then "agentic-whatsapp restart".\n${auth.detail}`);
   }
 
-  const state = await AgentState.load(join(stateDir, 'state.json'));
-  const instructions = new InstructionsStore(config.paths.instructionsFile, join(stateDir, 'instructions-history'));
-  const engine = createEngine(config.engine, stateDir, systemPrompt(config.agent));
+  const state = await AgentState.load(join(paths.stateDir, 'state.json'));
+  const instructions = new InstructionsStore(paths.instructionsFile, join(paths.stateDir, 'instructions-history'));
+  const engine = createEngine(config.engine, paths.stateDir, systemPrompt(config.agent));
   await engine.prepare();
+  const health = new Health(paths.healthFile, notify, config.agent.name);
 
-  const agent = new Agent({ config, wacli, decider: engine, state, instructions, log, dryRun: options.dryRun });
+  const agent = new Agent({
+    config,
+    wacli,
+    decider: engine,
+    state,
+    instructions,
+    log,
+    dryRun: options.dryRun,
+    events: {
+      onQueued: () => health.messageQueued(),
+      onDecision: (error) => {
+        if (error === undefined) {
+          health.decided();
+          health.succeeded('engine');
+        } else {
+          health.failed('engine', error);
+        }
+      },
+    },
+  });
   const secret = randomBytes(32).toString('hex');
   const receiver = await startReceiver({
     host: config.wacli.listenHost,
@@ -58,6 +103,13 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
       ...config.wacli.syncArgs,
     ],
     log,
+    {
+      onExit: ({ code, signal, lastLine }) => {
+        const how = signal === null ? `code ${String(code)}` : signal;
+        health.failed('wacli', `wacli sync stopped (${how})${lastLine === '' ? '' : `: ${lastLine}`}`);
+      },
+      onHealthy: () => health.succeeded('wacli'),
+    },
   );
   sync.start();
 
@@ -69,6 +121,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     engine: config.engine.kind,
     model: config.engine.model,
     dryRun: options.dryRun,
+    service: options.service,
     directMessages: config.routing.directMessages,
     allowlistedGroups: config.routing.groupAllowlist.length,
   });
@@ -85,5 +138,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   await Promise.race([agent.idle(), new Promise((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS).unref())]);
   await sync.stop();
   await state.save();
+  health.stopped();
+  await health.save();
   log.info('stopped');
 }

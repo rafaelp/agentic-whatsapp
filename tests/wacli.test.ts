@@ -89,13 +89,72 @@ setInterval(() => {}, 1000);`,
     expect(log.has('warn', 'wacli sync stopped, restarting')).toBe(false);
   });
 
-  it('restarts wacli when it exits', async () => {
+  it('restarts wacli when it exits, and reports why', async () => {
     const dir = await tempDir();
-    const command = await fakeCommand(dir, 'wacli', 'process.exit(3);');
+    const command = await fakeCommand(
+      dir,
+      'wacli',
+      `console.log('Connected.');
+console.error('error: not authenticated; run wacli auth');
+process.exit(3);`,
+    );
     const log = new MemoryLogger();
-    const supervisor = new SyncSupervisor(new Wacli(command, ''), ['sync'], log);
+    const exits: { code: number | null; lastLine: string }[] = [];
+    const supervisor = new SyncSupervisor(new Wacli(command, ''), ['sync'], log, {
+      onExit: ({ code, lastLine }) => exits.push({ code, lastLine }),
+    });
     supervisor.start();
-    await expect.poll(() => log.has('warn', 'wacli sync stopped, restarting'), { timeout: 10_000 }).toBe(true);
+    await expect.poll(() => exits.length, { timeout: 10_000 }).toBeGreaterThan(0);
     await supervisor.stop();
+    expect(exits[0]).toEqual({ code: 3, lastLine: 'error: not authenticated; run wacli auth' });
+    expect(log.has('warn', 'wacli sync stopped, restarting')).toBe(true);
+  });
+
+  it('says when wacli has stayed up', async () => {
+    const dir = await tempDir();
+    const command = await fakeCommand(dir, 'wacli', 'setInterval(() => {}, 1000);');
+    let healthy = 0;
+    const supervisor = new SyncSupervisor(new Wacli(command, ''), ['sync'], new MemoryLogger(), {
+      onHealthy: () => {
+        healthy += 1;
+      },
+      healthyAfterMs: 50,
+    });
+    supervisor.start();
+    await expect.poll(() => healthy, { timeout: 10_000 }).toBe(1);
+    await supervisor.stop();
+  });
+});
+
+describe('Wacli.messageText', () => {
+  const savedEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  it('reads one message read-only, and returns null when it cannot', async () => {
+    const dir = await tempDir();
+    process.env.FAKE_LOG = join(dir, 'args.json');
+    const command = await fakeCommand(
+      dir,
+      'wacli',
+      `import { writeFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+writeFileSync(process.env.FAKE_LOG, JSON.stringify(args));
+if (args.includes('--id=M1')) console.log(JSON.stringify({ success: true, data: { Text: '', MediaCaption: 'foto da festa' }, error: null }));
+else console.log(JSON.stringify({ success: false, data: null, error: 'message not found' }));`,
+    );
+    const wacli = new Wacli(command, '');
+    expect(await wacli.messageText(BOB, 'M1')).toBe('foto da festa');
+    expect(JSON.parse(await readFile(join(dir, 'args.json'), 'utf8'))).toEqual([
+      '--read-only',
+      'messages',
+      'show',
+      `--chat=${BOB}`,
+      '--id=M1',
+      '--json',
+    ]);
+    expect(await wacli.messageText(BOB, 'NOPE')).toBeNull();
   });
 });

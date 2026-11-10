@@ -15,6 +15,13 @@ import { fromStoredMessage, fromWebhookPayload } from './whatsapp.js';
 
 const MAX_BATCH_SIZE = 30;
 
+export interface AgentEvents {
+  /** A message passed routing and is waiting for its batch. */
+  onQueued?: () => void;
+  /** The model answered (`error` undefined) or failed. */
+  onDecision?: (error?: string) => void;
+}
+
 export interface AgentDeps {
   config: Config;
   wacli: WacliClient;
@@ -24,6 +31,7 @@ export interface AgentDeps {
   log: Logger;
   dryRun?: boolean;
   now?: () => Date;
+  events?: AgentEvents;
 }
 
 /** Routes incoming messages, batches them per chat and runs one decision per batch, in order. */
@@ -61,11 +69,20 @@ export class Agent {
       now: this.now(),
       isAgentOutgoing: (candidate) => this.isAgentOutgoing(candidate),
     });
+    // Names and IDs only: message text never goes to the log.
+    const fields = {
+      chat: message.chat,
+      chatName: message.chatName || undefined,
+      id: message.id,
+      sender: message.fromMe ? 'me' : message.senderName || message.sender || undefined,
+      media: message.mediaType || undefined,
+    };
     if (!route.process) {
-      log.debug('skipped message', { chat: message.chat, id: message.id, reason: route.reason });
+      log.debug('skipped message', { ...fields, reason: route.reason });
       return;
     }
-    log.info('queued message', { chat: message.chat, id: message.id, kind: route.kind });
+    log.info('queued message', { ...fields, kind: route.kind });
+    this.deps.events?.onQueued?.();
     this.batcher.add({ ...message, kind: route.kind });
   }
 
@@ -126,13 +143,19 @@ export class Agent {
       decision = await this.deps.decider.decide(prompt);
     } catch (error) {
       log.error('model call failed', { chat: batch.chat, error: errorMessage(error) });
+      this.deps.events?.onDecision?.(errorMessage(error));
       if (invoked) {
         await this.execute([{ type: 'notify', text: `⚠️ Could not process your command: ${errorMessage(error)}` }], context);
       }
       return;
     }
+    this.deps.events?.onDecision?.();
     for (const warning of decision.warnings) log.warn('model answer', { chat: batch.chat, warning });
-    log.info('decision', { chat: batch.chat, actions: decision.actions.map((action) => action.type) });
+    log.info('decision', {
+      chat: batch.chat,
+      chatName: batch.chatName || undefined,
+      actions: decision.actions.map((action) => action.type),
+    });
     await this.execute(decision.actions, context);
   }
 

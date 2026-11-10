@@ -63,6 +63,15 @@ command = "wacli"
 store = ""
 # Extra arguments for "wacli sync --follow", e.g. ["--max-db-size", "4GB"].
 sync_args = []
+
+[service]
+# The agent log (~/Library/Logs/agentic-whatsapp/agent.log on macOS) rotates above
+# this size, keeping this many old copies.
+log_max_mb = 5
+log_keep = 5
+# macOS notifications from the background service when WhatsApp sync or the model
+# keeps failing, and when they recover.
+notify = true
 `;
 }
 

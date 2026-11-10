@@ -47,10 +47,22 @@ export interface WacliConfig {
   syncArgs: string[];
 }
 
+export interface ServiceConfig {
+  logMaxBytes: number;
+  logKeep: number;
+  notify: boolean;
+}
+
 export interface Paths {
   configFile: string;
   instructionsFile: string;
   stateDir: string;
+  healthFile: string;
+  logDir: string;
+  /** Everything the agent logs, rotated by size. */
+  agentLog: string;
+  /** stdout and stderr of the launchd service: crashes and startup errors. */
+  launchdLog: string;
 }
 
 export interface Config {
@@ -58,6 +70,7 @@ export interface Config {
   routing: RoutingConfig;
   engine: EngineConfig;
   wacli: WacliConfig;
+  service: ServiceConfig;
   paths: Paths;
 }
 
@@ -81,6 +94,14 @@ export function defaultStateDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.AGENTIC_WHATSAPP_STATE_DIR) return env.AGENTIC_WHATSAPP_STATE_DIR;
   const base = env.XDG_STATE_HOME || join(homedir(), '.local', 'state');
   return join(base, 'agentic-whatsapp');
+}
+
+/** ~/Library/Logs/agentic-whatsapp on macOS, next to the state elsewhere. */
+export function defaultLogDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  if (env.AGENTIC_WHATSAPP_LOG_DIR) return env.AGENTIC_WHATSAPP_LOG_DIR;
+  return platform === 'darwin'
+    ? join(homedir(), 'Library', 'Logs', 'agentic-whatsapp')
+    : join(defaultStateDir(env), 'logs');
 }
 
 export function defaultMessagePrefix(name: string): string {
@@ -109,10 +130,13 @@ export async function loadConfig(
   } catch (error) {
     throw new ConfigError(`Invalid TOML in ${configFile}: ${errorMessage(error)}`);
   }
-  return parseConfig(raw, { configFile, stateDir: defaultStateDir(env) });
+  return parseConfig(raw, { configFile, stateDir: defaultStateDir(env), logDir: defaultLogDir(env) });
 }
 
-export function parseConfig(raw: unknown, location: { configFile: string; stateDir: string }): Config {
+export function parseConfig(
+  raw: unknown,
+  location: { configFile: string; stateDir: string; logDir?: string },
+): Config {
   if (!isRecord(raw)) throw new ConfigError('The config file must be a TOML table');
   const root = new Section(raw, '');
 
@@ -187,17 +211,31 @@ export function parseConfig(raw: unknown, location: { configFile: string; stateD
     );
   }
   wacliSection.finish();
+
+  const serviceSection = root.section('service');
+  const service: ServiceConfig = {
+    logMaxBytes: serviceSection.integer('log_max_mb', 5, 1, 1024) * 1024 * 1024,
+    logKeep: serviceSection.integer('log_keep', 5, 1, 50),
+    notify: serviceSection.boolean('notify', true),
+  };
+  serviceSection.finish();
   root.finish();
 
+  const logDir = location.logDir ?? join(location.stateDir, 'logs');
   return {
     agent,
     routing,
     engine,
     wacli,
+    service,
     paths: {
       configFile: location.configFile,
       instructionsFile: join(dirname(location.configFile), 'instructions.md'),
       stateDir: location.stateDir,
+      healthFile: join(location.stateDir, 'health.json'),
+      logDir,
+      agentLog: join(logDir, 'agent.log'),
+      launchdLog: join(logDir, 'launchd.log'),
     },
   };
 }

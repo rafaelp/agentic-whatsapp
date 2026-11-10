@@ -2,7 +2,14 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
-import { ConfigError, defaultConfigPath, defaultStateDir, loadConfig, parseConfig } from '../src/config.js';
+import {
+  ConfigError,
+  defaultConfigPath,
+  defaultLogDir,
+  defaultStateDir,
+  loadConfig,
+  parseConfig,
+} from '../src/config.js';
 import { configTemplate } from '../src/templates.js';
 import { tempDir } from './helpers.js';
 
@@ -26,7 +33,23 @@ describe('parseConfig', () => {
       maxCallsPerDay: 300,
     });
     expect(config.wacli).toMatchObject({ command: 'wacli', listenHost: '127.0.0.1', listenPort: 0 });
-    expect(config.paths.instructionsFile).toBe('/home/me/.config/agentic-whatsapp/instructions.md');
+    expect(config.service).toEqual({ logMaxBytes: 5 * 1024 * 1024, logKeep: 5, notify: true });
+    expect(config.paths).toMatchObject({
+      instructionsFile: '/home/me/.config/agentic-whatsapp/instructions.md',
+      healthFile: '/home/me/.local/state/aw/health.json',
+      agentLog: '/home/me/.local/state/aw/logs/agent.log',
+      launchdLog: '/home/me/.local/state/aw/logs/launchd.log',
+    });
+  });
+
+  it('reads the service settings and an explicit log folder', () => {
+    const config = parseConfig(
+      { agent: { name: 'Ane' }, service: { log_max_mb: 2, log_keep: 3, notify: false } },
+      { ...location, logDir: '/home/me/Library/Logs/agentic-whatsapp' },
+    );
+    expect(config.service).toEqual({ logMaxBytes: 2 * 1024 * 1024, logKeep: 3, notify: false });
+    expect(config.paths.agentLog).toBe('/home/me/Library/Logs/agentic-whatsapp/agent.log');
+    expect(() => parseConfig({ agent: { name: 'Ane' }, service: { log_keep: 0 } }, location)).toThrow(/whole number/);
   });
 
   it('requires a valid agent name', () => {
@@ -120,5 +143,8 @@ describe('loadConfig', () => {
     expect(defaultConfigPath({ AGENTIC_WHATSAPP_CONFIG: '/y.toml' })).toBe('/y.toml');
     expect(defaultStateDir({ XDG_STATE_HOME: '/s' })).toBe('/s/agentic-whatsapp');
     expect(defaultStateDir({ AGENTIC_WHATSAPP_STATE_DIR: '/t' })).toBe('/t');
+    expect(defaultLogDir({ AGENTIC_WHATSAPP_LOG_DIR: '/l' }, 'darwin')).toBe('/l');
+    expect(defaultLogDir({}, 'darwin')).toMatch(/Library\/Logs\/agentic-whatsapp$/);
+    expect(defaultLogDir({ XDG_STATE_HOME: '/s' }, 'linux')).toBe('/s/agentic-whatsapp/logs');
   });
 });

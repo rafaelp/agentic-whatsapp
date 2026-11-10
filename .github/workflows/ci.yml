@@ -52,5 +52,14 @@ jobs:
           grep -q 'name = "Ane"' "$AGENTIC_WHATSAPP_CONFIG"
           # wacli and agy are not installed here, so check fails; the config line must still pass.
           (agentic-whatsapp check || true) | grep -q 'agent "Ane"'
-      - name: Generated launchd plist is valid
-        run: agentic-whatsapp launchd | plutil -lint -
+      - name: Generated launchd plist is valid, and status works
+        env:
+          AGENTIC_WHATSAPP_CONFIG: ${{ runner.temp }}/config/config.toml
+        run: |
+          # print looks for wacli and agy on PATH; stand-ins are enough here.
+          mkdir -p "$RUNNER_TEMP/bin"
+          for tool in wacli agy; do printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/bin/$tool"; done
+          chmod +x "$RUNNER_TEMP/bin/wacli" "$RUNNER_TEMP/bin/agy"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          agentic-whatsapp print | plutil -lint -
+          agentic-whatsapp status | grep -q 'not installed'

@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import type { Logger } from './log.js';
 import { type RunResult, runProcess } from './process.js';
-import { errorMessage, isRecord, lastLines } from './util.js';
+import { asString, errorMessage, isRecord, lastLines } from './util.js';
 import type { StoredMessage } from './whatsapp.js';
 
 export interface WacliClient {
@@ -43,6 +43,17 @@ export class Wacli implements WacliClient {
   async listMessages(chat: string, limit: number): Promise<StoredMessage[]> {
     const data = await this.json(['messages', 'list', `--chat=${chat}`, `--limit=${limit}`], 30_000);
     return isRecord(data) && Array.isArray(data.messages) ? (data.messages as StoredMessage[]) : [];
+  }
+
+  /** Text (or media caption) of one stored message, read-only; null when it cannot be read. */
+  async messageText(chat: string, id: string): Promise<string | null> {
+    try {
+      const data = await this.json(['--read-only', 'messages', 'show', `--chat=${chat}`, `--id=${id}`], 10_000);
+      if (!isRecord(data)) return null;
+      return asString(data.Text) || asString(data.MediaCaption) || asString(data.DisplayText);
+    } catch {
+      return null;
+    }
   }
 
   async authStatus(): Promise<{ authenticated: boolean; detail: string }> {
@@ -88,21 +99,31 @@ export function parseEnvelope(stdout: string): { success: boolean; data: unknown
 }
 
 const RESTART_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
-const HEALTHY_RUN_MS = 5 * 60_000;
+const HEALTHY_RUN_MS = 2 * 60_000;
 const STOP_TIMEOUT_MS = 10_000;
+
+export interface SyncEvents {
+  /** wacli sync exited on its own. `lastLine` is the last warning or error it printed. */
+  onExit?: (exit: { code: number | null; signal: NodeJS.Signals | null; lastLine: string }) => void;
+  /** wacli sync has stayed up for `healthyAfterMs` (default 2 minutes). */
+  onHealthy?: () => void;
+  healthyAfterMs?: number;
+}
 
 /** Keeps `wacli sync --follow` running, restarting it with backoff when it exits. */
 export class SyncSupervisor {
   private child: ChildProcess | undefined;
   private stopping = false;
   private attempt = 0;
-  private startedAt = 0;
+  private lastLine = '';
   private restartTimer: ReturnType<typeof setTimeout> | undefined;
+  private healthyTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly wacli: Wacli,
     private readonly args: string[],
     private readonly log: Logger,
+    private readonly events: SyncEvents = {},
   ) {}
 
   start(): void {
@@ -113,6 +134,7 @@ export class SyncSupervisor {
   async stop(): Promise<void> {
     this.stopping = true;
     if (this.restartTimer !== undefined) clearTimeout(this.restartTimer);
+    if (this.healthyTimer !== undefined) clearTimeout(this.healthyTimer);
     const child = this.child;
     if (child === undefined || child.exitCode !== null) return;
     const exited = new Promise<void>((resolve) => child.once('close', () => resolve()));
@@ -123,7 +145,7 @@ export class SyncSupervisor {
   }
 
   private spawn(): void {
-    this.startedAt = Date.now();
+    this.lastLine = '';
     const child = spawn(this.wacli.command, [...this.wacli.globalArgs(), ...this.args], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -135,9 +157,18 @@ export class SyncSupervisor {
       this.onExit(code, signal);
     };
 
+    if (this.healthyTimer !== undefined) clearTimeout(this.healthyTimer);
+    this.healthyTimer = setTimeout(() => {
+      if (this.child !== child) return;
+      this.attempt = 0;
+      this.events.onHealthy?.();
+    }, this.events.healthyAfterMs ?? HEALTHY_RUN_MS);
+    this.healthyTimer.unref();
+
     forEachLine(child.stdout, (line) => this.logLine(line));
     forEachLine(child.stderr, (line) => this.logLine(line));
     child.on('error', (error) => {
+      this.lastLine = `could not run ${this.wacli.command}: ${errorMessage(error)}`;
       this.log.error('could not run wacli sync', { error: errorMessage(error) });
       onExit(null, null);
     });
@@ -146,18 +177,24 @@ export class SyncSupervisor {
 
   private onExit(code: number | null, signal: NodeJS.Signals | null): void {
     this.child = undefined;
+    if (this.healthyTimer !== undefined) clearTimeout(this.healthyTimer);
     if (this.stopping) return;
-    if (Date.now() - this.startedAt > HEALTHY_RUN_MS) this.attempt = 0;
     const delay = RESTART_DELAYS_MS[Math.min(this.attempt, RESTART_DELAYS_MS.length - 1)] ?? 60_000;
     this.attempt += 1;
     this.log.warn('wacli sync stopped, restarting', { code, signal, inSeconds: delay / 1000 });
+    this.events.onExit?.({ code, signal, lastLine: this.lastLine });
     this.restartTimer = setTimeout(() => this.spawn(), delay);
   }
 
   private logLine(line: string): void {
-    if (/^Synced \d+ messages/.test(line)) this.log.debug(`wacli: ${line}`);
-    else if (/^(warning|error)/i.test(line)) this.log.warn(`wacli: ${line}`);
-    else this.log.info(`wacli: ${line}`);
+    if (/^Synced \d+ messages/.test(line)) {
+      this.log.debug(`wacli: ${line}`);
+    } else if (/^(warning|error)|fail|not authenticated|logged out|revoked/i.test(line)) {
+      this.lastLine = line;
+      this.log.warn(`wacli: ${line}`);
+    } else {
+      this.log.info(`wacli: ${line}`);
+    }
   }
 }
 

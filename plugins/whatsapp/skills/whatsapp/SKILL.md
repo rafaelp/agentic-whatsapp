@@ -89,7 +89,8 @@ wacli $ARGUMENTS
   example the agentic-whatsapp agent). Sends, chat state (`archive`, `pin`, `mute`, `mark-read`, …),
   `messages edit`, `poll vote`, `presence` and `contacts check|save` go through that process
   automatically. Everything else that writes or connects (groups, profile, channels, media, history,
-  deletions, cleanup) needs it stopped: say so, and ask before stopping anything.
+  deletions, cleanup) needs it stopped: say so, and ask before stopping anything. For the agent, that
+  is `agentic-whatsapp stop`, then the command, then `agentic-whatsapp start`.
 - **A send that fails with a connection error may still have been delivered.** Before retrying, check
   `wacli --read-only messages list --chat <jid> --from-me --limit 3`.
 - `history backfill`, `media backfill`, `media retry` and `sync --once` can take minutes. Use a long

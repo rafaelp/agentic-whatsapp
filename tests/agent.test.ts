@@ -150,6 +150,43 @@ describe('Agent', () => {
     expect(decider.prompts).toHaveLength(1);
   });
 
+  it('reports queued messages and model results to its listener', async () => {
+    const dir = await tempDir();
+    const config = makeConfig({}, dir);
+    const decider = new FakeDecider();
+    const events: string[] = [];
+    const agent = new Agent({
+      config,
+      wacli: new FakeWacli(),
+      decider,
+      state: await AgentState.load(null),
+      instructions: new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history')),
+      log: new MemoryLogger(),
+      now: () => NOW,
+      events: {
+        onQueued: () => events.push('queued'),
+        onDecision: (error) => events.push(error === undefined ? 'decided' : `failed: ${error}`),
+      },
+    });
+    agent.handleEvent(payload({ Text: 'oi' }));
+    agent.flushPending();
+    await agent.idle();
+    decider.error = new Error('quota exceeded');
+    agent.handleEvent(payload({ Chat: '5521999990002@s.whatsapp.net', Text: 'oi' }));
+    agent.flushPending();
+    await agent.idle();
+    agent.handleEvent(payload({ Chat: OTHER_GROUP, Text: 'ignored' }));
+    expect(events).toEqual(['queued', 'decided', 'queued', 'failed: quota exceeded']);
+  });
+
+  it('logs names and IDs of messages, never their text', async () => {
+    const { log, deliver } = await setup();
+    await deliver(payload({ ChatName: '', PushName: 'Carla', Text: 'segredo do boleto' }));
+    const queued = log.entries.find((entry) => entry.message === 'queued message');
+    expect(queued?.fields).toMatchObject({ chat: BOB, sender: 'Carla', kind: 'message' });
+    expect(JSON.stringify(log.entries)).not.toContain('segredo do boleto');
+  });
+
   it('ignores receipts and presence events', async () => {
     const { decider, deliver } = await setup();
     await deliver({ EventType: 'receipt', Chat: BOB, ID: 'R1' }, { EventType: 'chat_presence', Chat: BOB });

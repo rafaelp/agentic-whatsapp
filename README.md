@@ -89,6 +89,13 @@ Unknown number, in a private chat:
 - **Hard to talk into things.** Other people's messages are marked as data and JSON-encoded, so they
   cannot pose as instructions, and a forwarded message never counts as a command.
 - **Cheap on bursts.** Messages are grouped per chat, so ten messages in a row cost one call.
+- **A proper background service.** `agentic-whatsapp install` keeps Ane running with launchd from
+  login on, restarts it if it crashes, and leaves it down with a notification when something needs
+  you, such as WhatsApp being unlinked. Logs rotate on their own.
+- **Watch it think.** `agentic-whatsapp stream` shows, live, every message arriving, what Ane decided
+  and what it sent. `agentic-whatsapp status` sums up the day.
+- **Tells you when it breaks.** A macOS notification when WhatsApp sync or the model keeps failing,
+  and another when it is back.
 - **Private by design.** Everything runs on your computer. The webhook only listens on localhost,
   signed with a secret that changes on every start, and message content stays out of the logs.
 - **Never talks to itself.** Everything it sends carries a prefix and has its own `@name` defused,
@@ -128,7 +135,20 @@ Check everything and watch Ane think before letting it talk:
 ```bash
 agentic-whatsapp check --call     # one real model call
 agentic-whatsapp run --dry-run    # decides, but only logs what it would send
-agentic-whatsapp run              # the real thing
+agentic-whatsapp install          # the real thing, in the background from now on
+agentic-whatsapp stream           # watch messages arrive and Ane act on them
+```
+
+```text
+$ agentic-whatsapp stream
+Following ~/Library/Logs/agentic-whatsapp/agent.log · Ctrl+C to stop
+01:51:46  ▶ Ane is running (antigravity, gemini-3.8-flash-low)
+01:51:47  📩 Carla: Hi! The condo fee is due tomorrow, can you pay it by then?
+01:51:47  ⚡ you in Family: @ane what did we decide about Sunday?
+01:51:48  🧠 Family: reply
+01:51:48  📤 reply → Family: 🤖 Ane: Lunch at grandma's at 1 pm. Bob is bringing dessert.
+01:51:56  🧠 Carla: notify
+01:51:56  📤 notify → Ane chat: 🤖 Ane: Carla says the condo fee is due tomorrow.
 ```
 
 <details>
@@ -228,40 +248,63 @@ The plugin only needs wacli, and works with or without the agent. See the
 | --- | --- |
 | `agentic-whatsapp init --name <name>` | Create the config and instructions files (`--language`, `--home-chat`, `--force`) |
 | `agentic-whatsapp check` | Check the config, wacli and the engine; `--call` also makes one real model call |
-| `agentic-whatsapp run` | Run the agent in the foreground; `--dry-run` only logs, `--verbose` shows skipped messages |
-| `agentic-whatsapp launchd` | Print a macOS launchd agent that keeps `run` alive |
-| `agentic-whatsapp --version` | Print the version |
+| `agentic-whatsapp run` | Run the agent in the foreground; `--dry-run` only logs, `--verbose` shows debug lines too |
+| `agentic-whatsapp install` | Install and start the background service (macOS launchd) |
+| `agentic-whatsapp uninstall` | Stop the service and delete its plist |
+| `agentic-whatsapp start` / `stop` / `restart` | Control the installed service; `stop` lasts until the next start or login |
+| `agentic-whatsapp status` | Show the service, today's activity and calls, and recent errors |
+| `agentic-whatsapp stream` | Watch the agent live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown |
+| `agentic-whatsapp logs` | Follow the raw log |
+| `agentic-whatsapp print` | Print the plist that `install` writes |
+| `agentic-whatsapp version` | Print the version |
 
 | Path | Content |
 | --- | --- |
 | `~/.config/agentic-whatsapp/config.toml` | Configuration |
 | `~/.config/agentic-whatsapp/instructions.md` | Your standing instructions, in any language |
+| `~/Library/LaunchAgents/agentic-whatsapp.plist` | The launchd service |
+| `~/Library/Logs/agentic-whatsapp/agent.log` | Everything the agent does, one line per event, without message text; rotated by size |
+| `~/Library/Logs/agentic-whatsapp/launchd.log` | What the service printed outside the log: crashes and startup errors |
+| `~/.local/state/agentic-whatsapp/health.json` | When the agent started, last message and decision, failures in a row |
 | `~/.local/state/agentic-whatsapp/state.json` | Handled message IDs, messages Ane sent, today's call count |
 | `~/.local/state/agentic-whatsapp/instructions-history/` | Every previous version of the instructions |
 | `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema and the empty workspace agy runs in |
 | `~/.local/state/agentic-whatsapp/gemini/` | The same for Gemini CLI |
 
-Paths follow `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, or `$AGENTIC_WHATSAPP_CONFIG` and
-`$AGENTIC_WHATSAPP_STATE_DIR`. agentic-whatsapp never changes wacli's or the engine's own settings.
+Paths follow `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, or `$AGENTIC_WHATSAPP_CONFIG`,
+`$AGENTIC_WHATSAPP_STATE_DIR` and `$AGENTIC_WHATSAPP_LOG_DIR`. On Linux the logs live in the state
+folder, under `logs/`. agentic-whatsapp never changes wacli's or the engine's own settings.
 
 ## Running in the background
 
 **macOS (launchd)**
 
 ```bash
-agentic-whatsapp launchd > ~/Library/LaunchAgents/agentic-whatsapp.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/agentic-whatsapp.plist
-tail -f ~/Library/Logs/agentic-whatsapp.log
+agentic-whatsapp install    # starts now, and at every login
+agentic-whatsapp status     # is it up? what did it do today?
+agentic-whatsapp stream     # watch it live
+agentic-whatsapp restart    # after you change the config
 ```
 
-The plist uses the current `PATH`, so generate it from a shell where `node`, `wacli` and `agy` are
-found. To stop it: `launchctl bootout gui/$(id -u)/agentic-whatsapp`.
+- `install` finds `wacli` and the engine on your current `PATH` and writes their folders into the
+  service, which launchd would not find otherwise. It pins the Node binary that ran the command by
+  absolute path, so switching your global Node in mise, nvm or asdf does not break the service. If you
+  remove that Node version, install agentic-whatsapp on the new one and run `install` again.
+- If the agent crashes, launchd restarts it after 30 seconds. If it cannot start because of something
+  you have to fix (WhatsApp unlinked, an invalid config), it shows a notification and stays down until
+  `agentic-whatsapp restart`.
+- When WhatsApp sync or the model fails 3 times in a row, you get a macOS notification, a reminder
+  every 10 more failures, and one more when it works again. Notifications come from **Script Editor**;
+  if none appear, enable it in System Settings › Notifications.
+- `agent.log` rotates above `service.log_max_mb` and keeps `service.log_keep` old copies.
+- `stop` keeps the service off until the next login. To turn it off for good, `uninstall`.
 
 **Linux (systemd)**
 
 Copy [`contrib/systemd/agentic-whatsapp.service`](contrib/systemd/agentic-whatsapp.service) to
 `~/.config/systemd/user/`, adjust `ExecStart` and `PATH`, then run
-`systemctl --user enable --now agentic-whatsapp`.
+`systemctl --user enable --now agentic-whatsapp`. The service commands above are macOS only, but
+`stream`, `status` and `logs` work everywhere.
 
 Ane only works while the computer is awake. Messages that arrive while it is off are handled when
 wacli catches up, as long as they are newer than `routing.max_message_age_minutes`.
@@ -295,6 +338,9 @@ never passes silently.
 | `wacli.sync_args` | `[]` | Extra arguments for `wacli sync --follow`, e.g. `["--max-db-size", "4GB"]`. |
 | `wacli.listen_host` | `127.0.0.1` | Webhook receiver address. Must be a loopback address. |
 | `wacli.listen_port` | `0` | Webhook receiver port. `0` picks a free one. |
+| `service.log_max_mb` | `5` | Rotate `agent.log` above this size. |
+| `service.log_keep` | `5` | Rotated copies of the log to keep. |
+| `service.notify` | `true` | macOS notifications from the background service. |
 
 ## Before you use it
 
@@ -336,6 +382,10 @@ agentic-whatsapp/
 ├── src/
 │   ├── cli.ts             # The agentic-whatsapp command
 │   ├── run.ts             # Starts the receiver and wacli sync, stops cleanly
+│   ├── service.ts         # install, uninstall, start, stop, restart, status, logs, print
+│   ├── stream.ts          # agentic-whatsapp stream: the live view of the agent log
+│   ├── health.ts          # Failures in a row, notifications, health.json
+│   ├── notify.ts          # macOS notifications
 │   ├── agent.ts           # Routes, batches and decides, one batch at a time
 │   ├── router.ts          # What reaches the model, and what counts as a command
 │   ├── batcher.ts         # Groups messages per chat
@@ -348,7 +398,7 @@ agentic-whatsapp/
 │   ├── receiver.ts        # Signed localhost webhook
 │   ├── wacli.ts           # wacli commands and the sync supervisor
 │   ├── whatsapp.ts        # Message normalization
-│   └── …                  # config, templates, state, instructions, launchd, logging
+│   └── …                  # config, templates, state, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables
 ```
 
