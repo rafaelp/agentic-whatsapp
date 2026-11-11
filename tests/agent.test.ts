@@ -1,8 +1,12 @@
+import { utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Agent } from '../src/agent.js';
 import { InstructionsStore } from '../src/instructions.js';
 import { MediaProcessor } from '../src/media.js';
+import { settingsServer as settingsServerFor } from '../src/settings-mcp.js';
+import { ConfigFile, LiveRouting } from '../src/settings.js';
+import { configTemplate } from '../src/templates.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Action } from '../src/types.js';
 import {
@@ -272,11 +276,116 @@ describe('Agent', () => {
     expect(decider.prompts[1]).toContain('- server "notes": all of its tools');
   });
 
+  it('offers its own settings only for commands the owner typed in the home chat', async () => {
+    const dir = await tempDir();
+    const config = makeConfig({}, dir);
+    const decider = new FakeDecider();
+    const { store, state, usage } = memoryStore(config);
+    const tools = new ToolRegistry(store, join(dir, 'skills'));
+    tools.saveServer({ name: 'notes', transport: 'stdio', command: '/bin/notes' });
+    const settingsServer = settingsServerFor(config, { dryRun: false, cli: '/x/cli.js' });
+    const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+    const agent = new Agent({ config, wacli: new FakeWacli(), decider, state, usage, tools, settingsServer, instructions, log: new MemoryLogger(), now: () => NOW });
+    const deliver = async (item: Record<string, unknown>) => {
+      agent.handleEvent(item);
+      agent.flushPending();
+      await agent.idle();
+    };
+
+    await deliver(payload({ Chat: HOME, FromMe: true, Text: 'monitore o grupo Família' }));
+    await deliver(payload({ Chat: FAMILY, FromMe: true, Text: '@ane monitore este grupo' }));
+    await deliver(payload({ Chat: HOME, FromMe: true, IsForwarded: true, Text: 'monitore o grupo X' }));
+    await deliver(payload({ Text: 'monitore o grupo X' }));
+    expect(decider.options.map((options) => options.tools?.mcp.map((server) => server.name))).toEqual([
+      ['agentic-whatsapp', 'notes'],
+      ['notes'],
+      [],
+      [],
+    ]);
+    expect(decider.prompts[0]).toContain('- server "agentic-whatsapp": get_settings, find_chats, monitor_group');
+    expect(decider.prompts[0]).toContain(', get_costs. It holds your own settings, and what you cost.');
+  });
+
+  it('applies routing changes in the config file to the next message', async () => {
+    const dir = await tempDir();
+    const file = join(dir, 'config.toml');
+    await writeFile(file, configTemplate({ name: 'Ane', language: 'pt-BR', timezone: 'America/Sao_Paulo', homeChat: HOME }));
+    const location = { configFile: file, stateDir: dir };
+    const settings = new ConfigFile(location, join(dir, 'config-history'));
+    const config = await settings.read();
+    const decider = new FakeDecider();
+    const { state, usage } = memoryStore(config);
+    const log = new MemoryLogger();
+    const routing = new LiveRouting(location, config.routing, log);
+    const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+    const agent = new Agent({ config, wacli: new FakeWacli(), decider, state, usage, routing, instructions, log, now: () => NOW });
+    const deliver = async (item: Record<string, unknown>) => {
+      agent.handleEvent(item);
+      agent.flushPending();
+      await agent.idle();
+    };
+
+    await deliver(payload({ Chat: FAMILY, Text: 'antes' }));
+    expect(decider.prompts).toHaveLength(0);
+    await settings.updateRouting({ groupAllowlist: [FAMILY] });
+    await utimes(file, new Date(), new Date(Date.now() + 5_000));
+    await deliver(payload({ Chat: FAMILY, Text: 'depois' }));
+    expect(decider.prompts).toHaveLength(1);
+    expect(log.entries.find((entry) => entry.message === 'settings changed')?.fields).toEqual({ monitoring: [FAMILY] });
+  });
+
   it('logs the tools a call used', async () => {
     const { decider, log, deliver } = await setup();
     decider.tools = ['notes/search'];
     await deliver(payload({ Chat: HOME, FromMe: true, Text: 'procura' }));
     expect(log.entries.find((entry) => entry.message === 'model call')?.fields).toMatchObject({ tools: ['notes/search'] });
+  });
+
+  it('records a highlight of the batch messages the model picked, sending nothing', async () => {
+    const { wacli, decider, state, log, deliver } = await setup();
+    await deliver(payload({ Chat: FAMILY, ID: 'G1', PushName: 'Carol', Text: 'jantar sexta?' }), payload({ Chat: FAMILY, ID: 'G2', Text: 'bom dia' }));
+    expect(decider.prompts).toHaveLength(1);
+
+    decider.actions = [{ type: 'highlight', text: 'Carol chamou para jantar', ids: ['G3', 'NOT-IN-BATCH'] }];
+    await deliver(payload({ Chat: FAMILY, ID: 'G3', PushName: 'Carol', Text: 'e aí, vamos?' }), payload({ Chat: FAMILY, ID: 'G4', Text: 'oi' }));
+
+    expect(wacli.sent).toEqual([]);
+    expect(state.recentHighlights(5)).toEqual([
+      expect.objectContaining({ chat: FAMILY, ids: ['G3'], text: 'Carol chamou para jantar' }),
+    ]);
+    expect(log.has('info', 'highlight')).toBe(true);
+  });
+
+  it('puts the cost of the day before in the stream once, from 1 am local time', async () => {
+    const dir = await tempDir();
+    const config = makeConfig({}, dir);
+    const { state, usage } = memoryStore(config);
+    const call = (startedAt: Date) =>
+      usage.record(
+        { attempt: 1, startedAt, durationMs: 1_000, status: 'ok', usage: { inputTokens: 1_000, outputTokens: 100, thinkingTokens: 0, cachedTokens: 0 }, tools: [] },
+        { chat: BOB, chatName: 'Bob' },
+      );
+    call(new Date('2026-11-09T12:00:00Z'));
+    call(new Date('2026-11-10T02:59:00Z')); // 23:59 on the 9th in São Paulo
+    call(new Date('2026-11-10T03:30:00Z')); // already the 10th
+    let now = new Date('2026-11-10T03:59:00Z'); // 00:59
+    const log = new MemoryLogger();
+    const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+    const agent = new Agent({ config, wacli: new FakeWacli(), decider: new FakeDecider(), state, usage, instructions, log, now: () => now });
+
+    agent.reportDailyCost();
+    expect(state.lastHighlightId()).toBe(0);
+    now = new Date('2026-11-10T04:00:00Z'); // 01:00
+    agent.reportDailyCost();
+    agent.reportDailyCost();
+    expect(state.recentHighlights(5)).toEqual([
+      expect.objectContaining({
+        kind: 'daily_cost',
+        at: now,
+        dailyCost: { day: '2026-11-09', calls: 2, inputTokens: 2_000, outputTokens: 200, cost: 0.00225, currency: 'USD' },
+      }),
+    ]);
+    expect(log.entries.filter((entry) => entry.message === 'daily cost')).toHaveLength(1);
   });
 
   it('ignores receipts and presence events', async () => {

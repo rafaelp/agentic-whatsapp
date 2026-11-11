@@ -1,394 +1,130 @@
-import { open, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import type { Config } from './config.js';
-import { type LogEntry, type LogFields, parseLogLine } from './log.js';
-import { formatClock } from './time.js';
+import { Store } from './db.js';
+import { oneLine, type Painter, painter, sleep, type TextLookup } from './logs.js';
+import { AgentState, type DailyCost, type Highlight, type StoredText } from './state.js';
+import { dayKey, formatClock, formatLocalTime } from './time.js';
 import { formatMoney, formatTokens } from './usage.js';
-import { asString } from './util.js';
 import { Wacli } from './wacli.js';
 import { chatKind } from './whatsapp.js';
 
 export interface StreamOptions {
-  /** Also show messages the agent ignored (groups outside the allowlist, your own messages…). */
-  all: boolean;
-  /** Show message text, read from the wacli archive. Off keeps the screen free of content. */
-  text: boolean;
-  /** Also show wacli's own output and other debug lines. */
-  verbose: boolean;
-  /** Earlier events to show when starting. */
+  /** Earlier highlights to show when starting. */
   lines: number;
+  /** Show the text of the highlighted messages. Off shows who wrote and why it matters. */
+  text: boolean;
   color: boolean;
 }
 
-/** Returns the text of a stored message, or null. */
-export type TextLookup = (chat: string, id: string) => Promise<string | null>;
+/** Indent of the lines under a highlight's header, the width of "HH:MM:SS  ". */
+const INDENT = ' '.repeat(10);
 
-const KNOWN = new Set([
-  'agent running',
-  'stopping',
-  'stopped',
-  'queued message',
-  'decision',
-  'sent',
-  'dry run: would send',
-  'dry run: would update the instructions',
-  'instructions updated',
-  'notification for the owner',
-  'cost limit reached, skipping',
-  'media read',
-  'media not read',
-]);
-
-/** Turns agent log entries into one readable line each, for `agentic-whatsapp stream`. */
-export class StreamRenderer {
-  private readonly names = new Map<string, string>();
+/** Turns a highlight and its messages into the lines `agentic-whatsapp stream` prints. */
+export class HighlightRenderer {
   private readonly paint: Painter;
 
   constructor(
     private readonly config: Config,
-    private readonly options: Pick<StreamOptions, 'all' | 'text' | 'verbose' | 'color'>,
+    private readonly options: Pick<StreamOptions, 'text' | 'color'>,
     private readonly lookup: TextLookup,
-    private readonly width: () => number = () => process.stdout.columns || 120,
+    private readonly now: () => Date = () => new Date(),
   ) {
     this.paint = painter(options.color);
   }
 
-  wants(entry: LogEntry): boolean {
-    if (entry.message === 'skipped message') return this.options.all;
-    // Model calls are shown when they used tools; the decision line carries their cost.
-    if (entry.message === 'model call') return this.options.verbose || Array.isArray(entry.fields.tools);
-    if (entry.message.startsWith('wacli: ')) return this.options.verbose;
-    if (entry.level === 'warn' || entry.level === 'error') return true;
-    if (KNOWN.has(entry.message)) return true;
-    return this.options.verbose;
-  }
-
-  async render(entry: LogEntry): Promise<string | null> {
+  async render(highlight: Highlight, messages: readonly StoredText[]): Promise<string[]> {
     const { paint } = this;
-    const f = entry.fields;
-    const chat = asString(f.chat);
-    let body: string;
-    let color: (text: string) => string = (text) => text;
-
-    switch (entry.message) {
-      case 'agent running':
-        body = `▶ ${asString(f.name) || this.config.agent.name} is running (${asString(f.engine)}, ${asString(f.model)})${f.dryRun === true ? ' · dry run, nothing is sent' : ''}`;
-        color = paint.bold;
-        break;
-      case 'stopping':
-        return null;
-      case 'stopped':
-        body = `■ ${this.config.agent.name} stopped`;
-        color = paint.bold;
-        break;
-      case 'queued message': {
-        this.remember(f);
-        const text = await this.text(chat, asString(f.id), asString(f.media));
-        if (f.kind === 'command') {
-          body = `⚡ ${this.who(f)} in ${this.chatLabel(chat)}${text}`;
-          color = paint.magenta;
-        } else {
-          const from = chatKind(chat) === 'group' ? `${this.chatLabel(chat)} · ${this.who(f)}` : this.chatLabel(chat);
-          body = `📩 ${from}${text}`;
-          color = paint.cyan;
-        }
-        break;
-      }
-      case 'skipped message':
-        this.remember(f);
-        body = `· ${this.chatLabel(chat)} · ${this.who(f)}, ignored: ${asString(f.reason)}`;
-        color = paint.dim;
-        break;
-      case 'decision': {
-        this.remember(f);
-        const actions = Array.isArray(f.actions) ? f.actions.map(String) : [];
-        body = `🧠 ${this.chatLabel(chat)}: ${actions.length === 0 ? 'nothing to do' : actions.join(', ')}${this.cost(f)}`;
-        break;
-      }
-      case 'model call': {
-        this.remember(f);
-        const tools = Array.isArray(f.tools) ? f.tools.map(String) : [];
-        const status = f.status === 'ok' ? '' : ` (${asString(f.status) === 'tool' ? 'discarded' : 'failed'})`;
-        body = tools.length > 0 ? `🔧 ${this.chatLabel(chat)}: ${tools.join(', ')}${status}` : `· model call ${this.chatLabel(chat)}${status}${this.cost(f)}`;
-        color = tools.length > 0 ? paint.blue : paint.dim;
-        break;
-      }
-      case 'media read': {
-        this.remember(f);
-        const image = f.kind === 'image';
-        body = `${image ? '🖼' : '🎤'} ${this.chatLabel(chat)}: ${image ? 'image described' : 'audio transcribed'}${this.cost(f)}`;
-        color = paint.blue;
-        break;
-      }
-      case 'media not read':
-        this.remember(f);
-        body = `· ${this.chatLabel(chat)}: ${asString(f.kind) || 'media'} not read, ${asString(f.reason)}`;
-        color = paint.dim;
-        break;
-      case 'could not read media':
-        this.remember(f);
-        body = `⚠ could not read the ${asString(f.kind) || 'media'} (${this.chatLabel(chat)}): ${asString(f.error)}`;
-        color = paint.yellow;
-        break;
-      case 'cost limit reached, skipping':
-        body = `⚠ ${asString(f.period) === '' ? '' : `${asString(f.period)} `}cost limit reached (${this.money(f.spent)} of ${this.money(f.limit)}), skipped ${this.chatLabel(chat)}`;
-        color = paint.yellow;
-        break;
-      case 'sent': {
-        const to = asString(f.to);
-        const text = await this.text(to, asString(f.id), '');
-        body = `📤 ${asString(f.purpose)} → ${this.chatLabel(to)}${text}`;
-        color = paint.green;
-        break;
-      }
-      case 'dry run: would send':
-        body = `📝 would ${asString(f.purpose)} → ${this.chatLabel(asString(f.to))}${this.options.text ? `: ${oneLine(asString(f.text))}` : ''}`;
-        color = paint.yellow;
-        break;
-      case 'dry run: would update the instructions':
-        body = '📝 would update the instructions';
-        color = paint.yellow;
-        break;
-      case 'instructions updated':
-        body = '📝 instructions updated';
-        color = paint.green;
-        break;
-      case 'notification for the owner':
-        body = `🔔 ${this.options.text ? oneLine(asString(f.text)) : 'notification (no home chat set)'}`;
-        color = paint.yellow;
-        break;
-      case 'model call failed':
-        body = `✗ model call failed (${this.chatLabel(chat)}): ${asString(f.error)}`;
-        color = paint.red;
-        break;
-      case 'send failed':
-        body = `✗ send failed → ${this.chatLabel(asString(f.to))}: ${asString(f.error)}`;
-        color = paint.red;
-        break;
-      case 'dropped an action':
-        body = `⚠ dropped ${asString(f.action)}: ${asString(f.reason)}`;
-        color = paint.yellow;
-        break;
-      case 'daily model call limit reached, skipping':
-        body = `⚠ daily call limit reached, skipped ${this.chatLabel(chat)}`;
-        color = paint.yellow;
-        break;
-      case 'wacli sync stopped, restarting':
-        body = `⚠ wacli sync stopped, restarting in ${String(f.inSeconds ?? '?')}s`;
-        color = paint.yellow;
-        break;
-      default:
-        if (entry.message.startsWith('notification: ')) {
-          body = `🔔 ${entry.message.slice('notification: '.length)}: ${asString(f.message)}`;
-          color = paint.yellow;
-        } else {
-          const details = Object.keys(f).length === 0 ? '' : ` ${JSON.stringify(f)}`;
-          if (entry.level === 'error') {
-            body = `✗ ${entry.message}${details}`;
-            color = paint.red;
-          } else if (entry.level === 'warn') {
-            body = `⚠ ${entry.message}${details}`;
-            color = paint.yellow;
-          } else {
-            body = `${entry.message}${details}`;
-            color = paint.dim;
-          }
-        }
+    const zone = this.config.agent.timezone;
+    const time =
+      dayKey(highlight.at, zone) === dayKey(this.now(), zone) ? formatClock(highlight.at, zone) : formatLocalTime(highlight.at, zone);
+    if (highlight.kind === 'daily_cost') return [`${paint.dim(time)}  ${this.costLine(highlight.dailyCost)}`];
+    const lines = [`${paint.dim(time)}  ${paint.bold(paint.magenta(`★ ${this.chatLabel(highlight, messages)}`))}`];
+    for (const message of messages) {
+      const who = message.fromMe ? 'you' : message.senderName || message.sender.split('@')[0] || 'someone';
+      const content = this.options.text ? await this.content(highlight.chat, message) : '';
+      lines.push(`${INDENT}${paint.cyan(who)}${content === '' ? '' : `: ${content}`}`);
     }
-
-    const time = formatClock(entry.time, this.config.agent.timezone);
-    return `${paint.dim(time)}  ${color(truncate(body, this.width() - time.length - 2))}`;
+    if (highlight.text !== '') lines.push(`${INDENT}${paint.yellow(`↳ ${oneLine(highlight.text)}`)}`);
+    return lines;
   }
 
-  /** " · 9.4k → 42 tokens · $0.0072" when the entry has them. */
-  private cost(fields: LogFields): string {
-    const parts: string[] = [];
-    if (typeof fields.inputTokens === 'number' && typeof fields.outputTokens === 'number') {
-      parts.push(`${formatTokens(fields.inputTokens)} → ${formatTokens(fields.outputTokens)} tokens`);
-    }
-    if (typeof fields.cost === 'number') parts.push(this.money(fields.cost));
-    return parts.map((part) => ` · ${part}`).join('');
+  /** "Σ Costs of 2026-11-09: $0.4213 in 37 model calls · 1.25M tokens in, 31k out" */
+  private costLine(daily: DailyCost | undefined): string {
+    const { paint } = this;
+    if (daily === undefined) return paint.green('Σ Costs');
+    const calls = `${daily.calls} model call${daily.calls === 1 ? '' : 's'}`;
+    const tokens = `${formatTokens(daily.inputTokens)} tokens in, ${formatTokens(daily.outputTokens)} out`;
+    return `${paint.bold(paint.green(`Σ Costs of ${daily.day}: ${formatMoney(daily.cost, daily.currency)} in ${calls}`))}${paint.dim(` · ${tokens}`)}`;
   }
 
-  private money(value: unknown): string {
-    return typeof value === 'number' ? formatMoney(value, this.config.costs.currency) : '?';
+  private chatLabel(highlight: Highlight, messages: readonly StoredText[]): string {
+    if (highlight.chat === this.config.agent.homeChat) return `${this.config.agent.name} chat`;
+    if (highlight.chatName !== '') return highlight.chatName;
+    // A one-to-one chat often comes without a name; the contact's own name is the next best.
+    const contact = chatKind(highlight.chat) === 'direct' ? messages.find((message) => !message.fromMe)?.senderName : undefined;
+    return contact || highlight.chat.split('@')[0] || 'unknown chat';
   }
 
-  private remember(fields: LogFields): void {
-    const chat = asString(fields.chat);
-    const name = asString(fields.chatName);
-    if (chat === '') return;
-    if (name !== '') this.names.set(chat, name);
-    else if (chatKind(chat) === 'direct' && !this.names.has(chat)) {
-      const sender = asString(fields.sender);
-      if (sender !== '' && sender !== 'me') this.names.set(chat, sender);
-    }
-  }
-
-  private chatLabel(chat: string): string {
-    if (chat !== '' && chat === this.config.agent.homeChat) return `${this.config.agent.name} chat`;
-    return this.names.get(chat) ?? (chat.split('@')[0] || 'unknown chat');
-  }
-
-  private who(fields: LogFields): string {
-    const sender = asString(fields.sender);
-    return sender === 'me' ? 'you' : sender || 'someone';
-  }
-
-  private async text(chat: string, id: string, media: string): Promise<string> {
-    const tag = media === '' ? '' : `[${media}] `;
-    if (!this.options.text || chat === '' || id === '') return tag === '' ? '' : `: ${tag.trim()}`;
-    const text = await this.lookup(chat, id);
-    const content = `${tag}${oneLine(text ?? '')}`.trim();
-    return content === '' ? '' : `: ${content}`;
+  /** The text, caption, description or transcript of a message, read from the wacli archive when the database kept none. */
+  private async content(chat: string, message: StoredText): Promise<string> {
+    let text = message.text;
+    if (text === '' && message.mediaText === '') text = (await this.lookup(chat, message.id)) ?? '';
+    const parts = [message.media === '' ? '' : `[${message.media}]`, oneLine(text), oneLine(message.mediaText)];
+    return parts.filter((part) => part !== '').join(' ');
   }
 }
 
-export interface FollowHandlers {
-  /** The lines already in the file when following starts. */
-  onInitial: (lines: string[]) => Promise<void>;
-  onLine: (line: string) => Promise<void>;
-  /** The file does not exist (yet). Called once until it appears. */
-  onMissing?: () => void;
-  pollMs?: number;
-  signal?: AbortSignal;
-}
-
-const INITIAL_BYTES = 256 * 1024;
-
-/** Follows a log file like `tail -F`: survives rotation and waits for the file to appear. */
-export async function followFile(path: string, handlers: FollowHandlers): Promise<void> {
-  const pollMs = handlers.pollMs ?? 500;
-  let position = 0;
-  let inode: number | undefined;
-  let partial = '';
-  let missingReported = false;
-
-  const initial = await stat(path).catch(() => null);
-  if (initial === null) {
-    handlers.onMissing?.();
-    missingReported = true;
-    await handlers.onInitial([]);
-  } else {
-    inode = initial.ino;
-    const start = Math.max(0, initial.size - INITIAL_BYTES);
-    const lines = (await readRange(path, start, initial.size)).split('\n');
-    if (start > 0) lines.shift();
-    partial = lines.pop() ?? '';
-    position = initial.size;
-    await handlers.onInitial(lines);
-  }
-
-  while (handlers.signal?.aborted !== true) {
-    await sleep(pollMs, handlers.signal);
-    const current = await stat(path).catch(() => null);
-    if (current === null) {
-      if (!missingReported) handlers.onMissing?.();
-      missingReported = true;
-      continue;
-    }
-    missingReported = false;
-    if (inode !== undefined && (current.ino !== inode || current.size < position)) {
-      position = 0;
-      partial = '';
-    }
-    inode = current.ino;
-    if (current.size <= position) continue;
-    const chunk = await readRange(path, position, current.size);
-    position = current.size;
-    const lines = (partial + chunk).split('\n');
-    partial = lines.pop() ?? '';
-    for (const line of lines) await handlers.onLine(line);
-  }
-}
-
-/** `agentic-whatsapp stream`: shows what the agent does, live, until Ctrl+C. */
+/**
+ * `agentic-whatsapp stream`: only the messages Ane highlighted, following the owner's
+ * instructions, and the cost of each day the next morning, until Ctrl+C. Entries come from
+ * the database, so they survive restarts and keep message text out of the log.
+ */
 export async function stream(
   config: Config,
   options: StreamOptions,
-  io: { write?: (line: string) => void; signal?: AbortSignal; pollMs?: number; lookup?: TextLookup } = {},
+  io: { write?: (line: string) => void; signal?: AbortSignal; pollMs?: number; lookup?: TextLookup; now?: () => Date } = {},
 ): Promise<void> {
   const write = io.write ?? ((line: string) => process.stdout.write(`${line}\n`));
-  const wacli = new Wacli(config.wacli.command, config.wacli.store);
-  const renderer = new StreamRenderer(config, options, io.lookup ?? ((chat, id) => wacli.messageText(chat, id)));
+  const pollMs = io.pollMs ?? 1_000;
   const paint = painter(options.color);
-  const show = async (entry: LogEntry | null) => {
-    if (entry === null || !renderer.wants(entry)) return;
-    const line = await renderer.render(entry);
-    if (line !== null) write(line);
-  };
+  const wacli = new Wacli(config.wacli.command, config.wacli.store);
+  const renderer = new HighlightRenderer(config, options, io.lookup ?? ((chat, id) => wacli.messageText(chat, id)), io.now);
 
-  write(paint.dim(`Following ${config.paths.agentLog} · Ctrl+C to stop`));
-  await followFile(config.paths.agentLog, {
-    onInitial: async (lines) => {
-      if (options.lines <= 0) return;
-      const entries = lines.map(parseLogLine).filter((entry) => entry !== null && renderer.wants(entry));
-      for (const entry of entries.slice(-options.lines)) await show(entry);
-    },
-    onLine: async (line) => show(parseLogLine(line)),
-    onMissing: () =>
-      write(paint.dim(`Waiting for ${config.paths.agentLog}. Is the agent running? Check with: agentic-whatsapp status`)),
-    pollMs: io.pollMs,
-    signal: io.signal,
-  });
-}
-
-interface Painter {
-  dim: (text: string) => string;
-  bold: (text: string) => string;
-  red: (text: string) => string;
-  green: (text: string) => string;
-  yellow: (text: string) => string;
-  cyan: (text: string) => string;
-  magenta: (text: string) => string;
-  blue: (text: string) => string;
-}
-
-function painter(enabled: boolean): Painter {
-  const code = (open: number, close: number) => (text: string) =>
-    enabled ? `\u001b[${open}m${text}\u001b[${close}m` : text;
-  return {
-    dim: code(2, 22),
-    bold: code(1, 22),
-    red: code(31, 39),
-    green: code(32, 39),
-    yellow: code(33, 39),
-    cyan: code(36, 39),
-    magenta: code(35, 39),
-    blue: code(34, 39),
-  };
-}
-
-function oneLine(text: string): string {
-  return text.replace(/\s*\n\s*/g, ' ⏎ ').trim();
-}
-
-function truncate(text: string, width: number): string {
-  const chars = [...text];
-  const limit = Math.max(20, width);
-  return chars.length <= limit ? text : `${chars.slice(0, limit - 1).join('')}…`;
-}
-
-async function readRange(path: string, start: number, end: number): Promise<string> {
-  const file = await open(path, 'r');
-  try {
-    const buffer = Buffer.alloc(end - start);
-    await file.read(buffer, 0, buffer.length, start);
-    return buffer.toString('utf8');
-  } finally {
-    await file.close();
+  write(paint.dim(`Highlights from ${config.agent.name} · Ctrl+C to stop`));
+  let waiting = false;
+  while (!existsSync(config.paths.database)) {
+    if (!waiting) write(paint.dim(`Waiting for ${config.paths.database}. Is the agent running? Check with: agentic-whatsapp status`));
+    waiting = true;
+    await sleep(pollMs, io.signal);
+    if (io.signal?.aborted === true) return;
   }
-}
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
+  const store = Store.open(config.paths.database);
+  const state = new AgentState(store);
+  const show = async (highlight: Highlight) => {
+    const messages = highlight.kind === 'messages' ? state.messagesById(highlight.chat, highlight.ids) : [];
+    for (const line of await renderer.render(highlight, messages)) write(line);
+  };
+  try {
+    let last = state.lastHighlightId();
+    const recent = options.lines > 0 ? state.recentHighlights(options.lines) : [];
+    if (last === 0) {
+      write(
+        paint.dim(
+          `Nothing highlighted yet. Tell ${config.agent.name} in the home chat what you want to see here, ` +
+            'such as: highlight the messages from Carol.',
+        ),
+      );
+    }
+    for (const highlight of recent) await show(highlight);
+    while (io.signal?.aborted !== true) {
+      await sleep(pollMs, io.signal);
+      for (const highlight of state.highlightsAfter(last)) {
+        await show(highlight);
+        last = highlight.id;
+      }
+    }
+  } finally {
+    store.close();
+  }
 }

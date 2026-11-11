@@ -25,6 +25,11 @@ guarantees, and CONTRIBUTING.md how to work on it.
   Tool permissions are enforced twice: by agy's settings (`toolSessionSettings`) and by the
   watchdog in `src/antigravity.ts`. Keep both in step, and keep `mcp_config.json`, which holds
   credentials, unreadable to the model.
+- The agent's own settings server (`src/settings-mcp.ts`) is offered only for commands typed in
+  the home chat (`Agent.toolsFor`). A tool that writes must stay inside `[routing]`, or SECURITY.md
+  has to say why; it edits the file through `ConfigFile` in `src/settings.ts`, which checks the
+  result and keeps the previous version. Only `[routing]` is read again while running (`LiveRouting`).
+  `get_costs` and `agentic-whatsapp costs --json` share `src/report.ts`; change both together.
 
 ## Releasing
 

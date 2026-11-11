@@ -149,6 +149,24 @@ const MIGRATIONS = [
   -- What a call was for: a decision, or reading an image or audio.
   ALTER TABLE calls ADD COLUMN purpose TEXT NOT NULL DEFAULT 'decision';
   `,
+  `
+  -- Messages the model highlighted for the owner's stream, with why. message_ids is a JSON list.
+  CREATE TABLE highlights (
+    id INTEGER PRIMARY KEY,
+    batch_id INTEGER,
+    at TEXT NOT NULL,
+    chat TEXT NOT NULL,
+    chat_name TEXT NOT NULL DEFAULT '',
+    message_ids TEXT NOT NULL DEFAULT '[]',
+    text TEXT
+  );
+  `,
+  `
+  -- Stream entries that are not highlighted messages. 'daily_cost': the model calls of a day,
+  -- in data as a JSON object, shown the next morning.
+  ALTER TABLE highlights ADD COLUMN kind TEXT NOT NULL DEFAULT 'messages';
+  ALTER TABLE highlights ADD COLUMN data TEXT;
+  `,
 ];
 
 /**

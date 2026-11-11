@@ -169,7 +169,7 @@ export async function install(config: Config): Promise<string[]> {
     `installed ${file}`,
     `${config.agent.name} starts now and at every login, and restarts if it crashes`,
     `log: ${config.paths.agentLog}`,
-    'watch it: agentic-whatsapp stream',
+    'watch it: agentic-whatsapp logs, or only what you asked to see: agentic-whatsapp stream',
   ];
 }
 

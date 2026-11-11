@@ -15,6 +15,7 @@ import {
 } from './usage.js';
 
 export type Breakdown = 'day' | 'chat' | 'model' | 'purpose';
+export const BREAKDOWNS: readonly Breakdown[] = ['day', 'chat', 'model', 'purpose'];
 
 const PURPOSES: Record<string, string> = { decision: 'decisions', image: 'images', audio: 'audio' };
 
@@ -27,46 +28,87 @@ export interface ReportOptions {
 
 const EMPTY: Totals = { calls: 0, inputTokens: 0, outputTokens: 0, thinkingTokens: 0, cachedTokens: 0, cost: 0 };
 
+/** The totals of the last days by one key; every day is listed, with or without calls. */
+function breakdownGroups(ledger: UsageLedger | undefined, by: Breakdown, days: readonly string[], since: string): Group[] {
+  const groups = ledger?.breakdown(by, since) ?? [];
+  if (by === 'day') {
+    const found = new Map(groups.map((group) => [group.key, group]));
+    return days.map((day): Group => found.get(day) ?? { ...EMPTY, key: day, label: day });
+  }
+  if (by === 'purpose') return groups.map((group) => ({ ...group, label: PURPOSES[group.key] ?? group.key }));
+  return groups;
+}
+
+function periodRows(config: Config, ledger: UsageLedger | undefined, now: Date) {
+  const periods = periodsOf(now, config.agent.timezone);
+  return PERIODS.map((period) => ({
+    name: PERIOD_NAMES[period].current,
+    period,
+    key: periods[period],
+    totals: ledger?.totals(period, periods[period]) ?? EMPTY,
+    limit: limitFor(config.costs, period),
+  }));
+}
+
+/** The prices, the totals of today, this week, this month and all time, and the limits. */
+function costBasics(config: Config, ledger: UsageLedger | undefined, now: Date) {
+  const { costs, engine } = config;
+  const prices = pricesFor(engine.model, costs);
+  return {
+    currency: costs.currency,
+    model: engine.model,
+    prices: { inputPerMillion: prices.input, outputPerMillion: prices.output, cachedPerMillion: prices.cached, known: prices.known },
+    periods: Object.fromEntries(
+      periodRows(config, ledger, now).map((row) => [row.period, { key: row.key, ...row.totals, limit: row.limit || null }]),
+    ),
+    allTime: ledger?.totals('all') ?? EMPTY,
+  };
+}
+
+/**
+ * Every cost figure at once, for the agent's get_costs tool: the totals and limits, and the
+ * last `days` days broken down by day, chat, model and purpose, each list cut at `maxGroups`.
+ */
+export function costSummary(
+  config: Config,
+  ledger: UsageLedger | undefined,
+  now: Date,
+  options: { days: number; maxGroups: number },
+): Record<string, unknown> {
+  const days = recentDays(now, config.agent.timezone, options.days);
+  const since = days[0] ?? dayKey(now, config.agent.timezone);
+  return {
+    ...costBasics(config, ledger, now),
+    billing:
+      config.engine.kind === 'antigravity'
+        ? 'Antigravity runs on the Google AI plan, which is not billed per call: these are what the same tokens would cost on the Gemini API'
+        : 'Gemini CLI runs on an API key, billed per token at these prices',
+    since,
+    breakdowns: Object.fromEntries(
+      BREAKDOWNS.map((by) => {
+        const groups = breakdownGroups(ledger, by, days, since);
+        return [by, by === 'day' ? groups : groups.slice(0, options.maxGroups)];
+      }),
+    ),
+  };
+}
+
 /** The lines `agentic-whatsapp costs` prints. `ledger` is undefined before the agent first ran. */
 export function costReport(config: Config, ledger: UsageLedger | undefined, now: Date, options: ReportOptions): string[] {
   const { costs, engine } = config;
   const zone = config.agent.timezone;
   const money = (amount: number) => formatMoney(amount, costs.currency);
   const price = (amount: number) => formatPrice(amount, costs.currency);
-  const periods = periodsOf(now, zone);
   const days = recentDays(now, zone, options.days);
-  const since = days[0] ?? periods.day;
+  const since = days[0] ?? periodsOf(now, zone).day;
 
-  const rows = PERIODS.map((period) => {
-    const totals = ledger?.totals(period, periods[period]) ?? EMPTY;
-    const limit = limitFor(costs, period);
-    return { name: PERIOD_NAMES[period].current, period, totals, limit };
-  });
+  const rows = periodRows(config, ledger, now);
   const allTime = ledger?.totals('all') ?? EMPTY;
-  let groups = ledger?.breakdown(options.by, since) ?? [];
-  if (options.by === 'day') {
-    const found = new Map(groups.map((group) => [group.key, group]));
-    groups = days.map((day): Group => found.get(day) ?? { ...EMPTY, key: day, label: day });
-  } else if (options.by === 'purpose') {
-    groups = groups.map((group) => ({ ...group, label: PURPOSES[group.key] ?? group.key }));
-  }
+  const groups = breakdownGroups(ledger, options.by, days, since);
 
   const prices = pricesFor(engine.model, costs);
   if (options.json) {
-    return [
-      JSON.stringify(
-        {
-          currency: costs.currency,
-          model: engine.model,
-          prices: { inputPerMillion: prices.input, outputPerMillion: prices.output, cachedPerMillion: prices.cached, known: prices.known },
-          periods: Object.fromEntries(rows.map((row) => [row.period, { key: periods[row.period], ...row.totals, limit: row.limit || null }])),
-          allTime,
-          breakdown: { by: options.by, since, groups },
-        },
-        null,
-        2,
-      ),
-    ];
+    return [JSON.stringify({ ...costBasics(config, ledger, now), breakdown: { by: options.by, since, groups } }, null, 2)];
   }
 
   const lines = [

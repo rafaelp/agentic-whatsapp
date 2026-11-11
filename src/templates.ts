@@ -26,6 +26,9 @@ timezone = ${quote(options.timezone)}
 home_chat = ${quote(options.homeChat)}
 # Prepended to every message the agent sends.
 # message_prefix = ${quote(`🤖 ${options.name}: `)}
+# Let the agent change [routing] when you ask in the home chat, such as
+# "monitor the Family group" (Antigravity only).
+settings_tools = true
 
 [routing]
 # Send one-to-one conversations to the model.
@@ -116,6 +119,8 @@ export function instructionsTemplate(name: string): string {
 
 ${name} reads this file before every decision. Write the rules in any language.
 Edit it by hand, or ask ${name} to change it, for example "${mention} from now on, ...".
+Rules can also choose what \`agentic-whatsapp stream\` shows, for example
+"${mention} highlight the messages from Carol for me".
 
 - Tell me about messages that look urgent or that need an answer from me today.
 - Ignore promotions, newsletters, automated notifications and small talk.

@@ -16,23 +16,41 @@ Every version published to npm has a matching `v` tag and GitHub release with th
   its cost, priced at Gemini API rates (Gemini 3.8 Flash built in, others set in `[costs]`).
   `agentic-whatsapp costs` sums today, this week, this month and all time, and breaks the last days
   down by day, chat or model (`--days`, `--by`, `--json`). `status` shows the cost, and the log and
-  `stream` show the tokens and cost of every decision.
+  `logs` show the tokens and cost of every decision.
 - Cost limits per day, week and month (`[costs] max_per_day`, `max_per_week`, `max_per_month`): the
   model is not called once one is reached, and you are told once, plus a warning at `warn_percent`.
 - Skills and MCP servers for Antigravity, managed with `agentic-whatsapp skills` and
   `agentic-whatsapp mcp` (`list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove`).
   They run in a workspace of their own, only the tools you allow can be used, by default only on
-  your own commands, and changes apply without a restart. `stream` shows the tools each call used.
+  your own commands, and changes apply without a restart. `logs` shows the tools each call used.
 - `check` reports the prices, the cost limits, the enabled skills and MCP servers, and the database.
 - Images and audio: when a message that reaches the model carries one, it is downloaded through wacli
   and read by the model first, in a run that can read only that file. Images are described, audio and
   voice notes transcribed, and the decision gets that text with the message and in later history. A
   voice note you record in the home chat is a command. `[media]` turns images or audio off and sets
-  `max_size_mb`; files go to the `media/` state folder and follow `[storage]`. `stream` shows each
+  `max_size_mb`; files go to the `media/` state folder and follow `[storage]`. `logs` shows each
   file read with its cost, and `costs --by purpose` splits decisions, images and audio.
+
+- A new `agentic-whatsapp stream` shows only the messages Ane highlighted for you: ask it in the home
+  chat, for example "highlight the messages from Carol for me", and the model highlights them from
+  then on with a new `highlight` action, which sends nothing. Highlights are kept in the database
+  with why they matter, and the stream shows each message's text, transcript or description.
+- Every day at 1 am, `agentic-whatsapp stream` shows the cost of the day before: its model calls,
+  tokens and cost.
+- Ane can change its own settings when you ask in the home chat, such as "monitor the Family group":
+  built-in MCP tools find chats by name in the wacli archive and change `routing.group_allowlist`,
+  `direct_messages` and `auto_reply_chats` in the config file, keeping its comments and the previous
+  version in `config-history/`. They are offered only for commands you typed in the home chat, need
+  Antigravity, and `agent.settings_tools = false` turns them off.
+- Ane can answer what it costs: its `get_costs` tool gives every figure of `agentic-whatsapp costs` in
+  one call, with today, this week, this month and all time, the limits, and the last days by day,
+  chat, model and purpose. `costs --json` and the tool share the same code.
 
 ### Changed
 
+- The live view of the agent that was `agentic-whatsapp stream` is now `agentic-whatsapp logs`, with
+  the same options; following the raw log is `logs --raw`.
+- Changes to `[routing]` in the config file apply from the next message, without a restart.
 - The state moved from `state.json` to the database. The first start imports it and renames it to
   `state.json.imported`.
 - `engine.max_calls_per_day` counts every run of the engine, including the second attempt after a

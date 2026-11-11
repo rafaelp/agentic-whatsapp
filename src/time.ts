@@ -21,6 +21,17 @@ export function dayKey(date: Date, timeZone: string): string {
   }).format(date);
 }
 
+/** The calendar day before a YYYY-MM-DD day. */
+export function previousDay(day: string): string {
+  const [year = 1970, month = 1, date = 1] = day.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, date - 1)).toISOString().slice(0, 10);
+}
+
+/** The hour of the day in the given zone, from 0 to 23. */
+export function localHour(date: Date, timeZone: string): number {
+  return Number(formatClock(date, timeZone).slice(0, 2));
+}
+
 /** Local time of day in the given zone, as HH:MM:SS. */
 export function formatClock(date: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('sv-SE', {

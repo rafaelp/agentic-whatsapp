@@ -1,213 +1,134 @@
-import { appendFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { formatLogLine, type LogEntry, type LogFields } from '../src/log.js';
-import { followFile, stream, StreamRenderer } from '../src/stream.js';
-import { BOB, FAMILY, HOME, makeConfig, NOW, OTHER_GROUP, tempDir } from './helpers.js';
+import { Store } from '../src/db.js';
+import { AgentState, type Highlight, type StoredText } from '../src/state.js';
+import { HighlightRenderer, stream } from '../src/stream.js';
+import { BOB, FAMILY, HOME, makeConfig, message, NOW, tempDir } from './helpers.js';
 
 const config = makeConfig();
-const entry = (message: string, fields: LogFields = {}, level: LogEntry['level'] = 'info'): LogEntry => ({
-  time: NOW,
-  level,
-  message,
-  fields,
+const highlight = (overrides: Partial<Highlight> = {}): Highlight => ({
+  id: 1,
+  at: NOW,
+  chat: FAMILY,
+  chatName: 'Família',
+  ids: ['M1'],
+  text: 'Carol chamou para jantar',
+  kind: 'messages',
+  ...overrides,
 });
+const stored = (overrides: Partial<StoredText> = {}): StoredText => ({
+  id: 'M1',
+  sender: '5521999990002@s.whatsapp.net',
+  senderName: 'Carol',
+  fromMe: false,
+  media: '',
+  text: 'vamos jantar sexta?',
+  mediaText: '',
+  ...overrides,
+});
+const archive = async (chat: string, id: string) => (chat === BOB && id === 'OLD' ? 'texto do arquivo' : null);
+const renderer = (text = true) => new HighlightRenderer(config, { text, color: false }, archive, () => NOW);
 
-const texts: Record<string, string> = {
-  [`${BOB}/M1`]: 'me passa o endereço?',
-  [`${OTHER_GROUP}/M2`]: '@ane resume isso',
-  [`${HOME}/SENT1`]: '🤖 Ane: Bob pediu o endereço',
-};
-const lookup = async (chat: string, id: string) => texts[`${chat}/${id}`] ?? null;
-
-const renderer = (options: Partial<{ all: boolean; text: boolean; verbose: boolean }> = {}) =>
-  new StreamRenderer(config, { all: false, text: true, verbose: false, color: false, ...options }, lookup, () => 200);
-
-describe('StreamRenderer', () => {
-  it('shows a message arriving, with its text from the archive', async () => {
-    const line = await renderer().render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob', kind: 'message' }));
-    expect(line).toBe('12:00:00  📩 Bob: me passa o endereço?');
+describe('HighlightRenderer', () => {
+  it('shows the chat, who wrote what, and why it matters', async () => {
+    expect(await renderer().render(highlight(), [stored()])).toEqual([
+      '12:00:00  ★ Família',
+      '          Carol: vamos jantar sexta?',
+      '          ↳ Carol chamou para jantar',
+    ]);
   });
 
-  it('shows group messages with the sender, and your commands apart', async () => {
-    const r = renderer();
-    expect(
-      await r.render(entry('queued message', { chat: FAMILY, chatName: 'Família', id: 'X', sender: 'Ana', kind: 'message' })),
-    ).toBe('12:00:00  📩 Família · Ana');
-    expect(
-      await r.render(entry('queued message', { chat: OTHER_GROUP, chatName: 'Amigos', id: 'M2', sender: 'me', kind: 'command' })),
-    ).toBe('12:00:00  ⚡ you in Amigos: @ane resume isso');
+  it('shows transcripts and descriptions with the media type, and the owner as you', async () => {
+    const lines = await renderer().render(highlight({ chat: HOME, chatName: '' }), [
+      stored({ fromMe: true, media: 'audio', text: '', mediaText: 'lembra do boleto' }),
+      stored({ media: 'image', text: 'olha', mediaText: 'Um boleto de R$ 120,00.' }),
+    ]);
+    expect(lines.slice(0, 3)).toEqual([
+      '12:00:00  ★ Ane chat',
+      '          you: [audio] lembra do boleto',
+      '          Carol: [image] olha Um boleto de R$ 120,00.',
+    ]);
   });
 
-  it('shows decisions and sends with the chat names it learned', async () => {
-    const r = renderer();
-    await r.render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob', kind: 'message' }));
-    expect(await r.render(entry('decision', { chat: BOB, actions: ['notify'] }))).toBe('12:00:00  🧠 Bob: notify');
-    expect(await r.render(entry('decision', { chat: BOB, actions: [] }))).toBe('12:00:00  🧠 Bob: nothing to do');
-    expect(await r.render(entry('sent', { to: HOME, purpose: 'notify', id: 'SENT1' }))).toBe(
-      '12:00:00  📤 notify → Ane chat: 🤖 Ane: Bob pediu o endereço',
-    );
-  });
-
-  it('shows the tokens and cost of a decision, the tools a call used and cost limits', async () => {
-    const r = renderer();
-    expect(await r.render(entry('decision', { chat: BOB, actions: ['notify'], inputTokens: 9_400, outputTokens: 42, cost: 0.0072 }))).toBe(
-      `12:00:00  🧠 ${BOB.split('@')[0]}: notify · 9.4k → 42 tokens · $0.0072`,
-    );
-    const call = entry('model call', { chat: BOB, status: 'ok', tools: ['notes/search'], cost: 0.01 });
-    expect(r.wants(call)).toBe(true);
-    expect(r.wants(entry('model call', { chat: BOB, status: 'ok' }))).toBe(false);
-    expect(await r.render(call)).toBe(`12:00:00  🔧 ${BOB.split('@')[0]}: notes/search`);
-    expect(await r.render(entry('cost limit reached, skipping', { chat: BOB, period: 'day', spent: 1.02, limit: 1 }, 'warn'))).toBe(
-      `12:00:00  ⚠ day cost limit reached ($1.02 of $1.00), skipped ${BOB.split('@')[0]}`,
-    );
-  });
-
-  it('shows images described and audio transcribed, with their cost, and media it could not read', async () => {
-    const r = renderer();
-    const bob = BOB.split('@')[0];
-    expect(await r.render(entry('media read', { chat: BOB, kind: 'audio', inputTokens: 20_000, outputTokens: 40, cost: 0.015 }))).toBe(
-      `12:00:00  🎤 ${bob}: audio transcribed · 20k → 40 tokens · $0.0150`,
-    );
-    expect(await r.render(entry('media read', { chat: BOB, kind: 'image' }))).toBe(`12:00:00  🖼 ${bob}: image described`);
-    expect(await r.render(entry('media not read', { chat: BOB, kind: 'image', reason: 'too large' }))).toBe(
-      `12:00:00  · ${bob}: image not read, too large`,
-    );
-    expect(await r.render(entry('could not read media', { chat: BOB, kind: 'audio', error: 'media expired' }, 'warn'))).toBe(
-      `12:00:00  ⚠ could not read the audio (${bob}): media expired`,
-    );
-    expect(r.wants(entry('media read', { chat: BOB }))).toBe(true);
-  });
-
-  it('keeps message text off the screen with --no-text', async () => {
-    const r = renderer({ text: false });
-    expect(await r.render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob', media: 'image' }))).toBe(
-      '12:00:00  📩 Bob: [image]',
-    );
-    expect(await r.render(entry('dry run: would send', { to: HOME, purpose: 'notify', text: 'secret' }))).toBe(
-      '12:00:00  📝 would notify → Ane chat',
-    );
-  });
-
-  it('shows ignored messages only with --all, and wacli output only with --verbose', () => {
-    const skipped = entry('skipped message', { chat: OTHER_GROUP, reason: 'group not in group_allowlist' }, 'debug');
-    const wacli = entry('wacli: Connected.');
-    expect(renderer().wants(skipped)).toBe(false);
-    expect(renderer({ all: true }).wants(skipped)).toBe(true);
-    expect(renderer().wants(wacli)).toBe(false);
-    expect(renderer({ verbose: true }).wants(wacli)).toBe(true);
-    expect(renderer().wants(entry('anything odd', {}, 'warn'))).toBe(true);
-  });
-
-  it('shows problems', async () => {
-    const r = renderer();
-    expect(await r.render(entry('model call failed', { chat: BOB, error: 'quota exceeded' }, 'error'))).toBe(
-      `12:00:00  ✗ model call failed (${BOB.split('@')[0]}): quota exceeded`,
-    );
-    expect(await r.render(entry('notification: Ane: WhatsApp sync is failing', { message: '3 times in a row.' }, 'warn'))).toBe(
-      '12:00:00  🔔 Ane: WhatsApp sync is failing: 3 times in a row.',
-    );
-    expect(await r.render(entry('wacli sync stopped, restarting', { inSeconds: 5 }, 'warn'))).toBe(
-      '12:00:00  ⚠ wacli sync stopped, restarting in 5s',
-    );
-  });
-
-  it('fits long lines to the terminal and colors them', async () => {
-    const narrow = new StreamRenderer(config, { all: false, text: true, verbose: false, color: true }, lookup, () => 30);
-    const line = await narrow.render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob' })) ?? '';
-    expect(line).toContain('\u001b[36m');
-    expect(line).toContain('…');
+  it('reads text the database did not keep from the wacli archive, and hides text with --no-text', async () => {
+    const old = highlight({ chat: BOB, chatName: '', text: '', at: new Date('2026-11-08T13:30:00Z') });
+    expect(await renderer().render(old, [stored({ id: 'OLD', sender: BOB, senderName: '', text: '' })])).toEqual([
+      '2026-11-08 10:30  ★ 5521999990001',
+      '          5521999990001: texto do arquivo',
+    ]);
+    expect((await renderer().render(highlight({ chat: BOB, chatName: '' }), [stored({ senderName: 'Bob' })]))[0]).toBe('12:00:00  ★ Bob');
+    expect(await renderer(false).render(highlight(), [stored()])).toEqual([
+      '12:00:00  ★ Família',
+      '          Carol',
+      '          ↳ Carol chamou para jantar',
+    ]);
   });
 });
 
-describe('followFile', () => {
-  it('reads the existing lines, then follows appends and rotation', async () => {
-    const dir = await tempDir();
-    const path = join(dir, 'agent.log');
-    await writeFile(path, 'one\ntwo\n');
-    const initial: string[] = [];
-    const seen: string[] = [];
-    const controller = new AbortController();
-
-    const following = followFile(path, {
-      onInitial: async (lines) => {
-        initial.push(...lines);
-      },
-      onLine: async (line) => {
-        seen.push(line);
-      },
-      pollMs: 20,
-      signal: controller.signal,
+describe('HighlightRenderer, daily costs', () => {
+  it('shows the cost of a day on one line', async () => {
+    const daily = highlight({
+      chat: '',
+      chatName: '',
+      ids: [],
+      text: '',
+      kind: 'daily_cost',
+      at: new Date('2026-11-10T04:00:00Z'),
+      dailyCost: { day: '2026-11-09', calls: 37, inputTokens: 1_250_000, outputTokens: 31_000, cost: 0.4213, currency: 'USD' },
     });
-
-    await expect.poll(() => initial).toEqual(['one', 'two']);
-    await appendFile(path, 'three\npar');
-    await appendFile(path, 'tial\n');
-    await expect.poll(() => seen).toEqual(['three', 'partial']);
-
-    await rename(path, `${path}.1`);
-    await writeFile(path, 'after rotation\n');
-    await expect.poll(() => seen).toEqual(['three', 'partial', 'after rotation']);
-
-    controller.abort();
-    await following;
-  });
-
-  it('waits for a file that does not exist yet', async () => {
-    const dir = await tempDir();
-    const path = join(dir, 'agent.log');
-    const seen: string[] = [];
-    let missing = 0;
-    const controller = new AbortController();
-    const following = followFile(path, {
-      onInitial: async () => {},
-      onLine: async (line) => {
-        seen.push(line);
-      },
-      onMissing: () => {
-        missing += 1;
-      },
-      pollMs: 20,
-      signal: controller.signal,
-    });
-    await writeFile(path, 'hello\n');
-    await expect.poll(() => seen).toEqual(['hello']);
-    expect(missing).toBe(1);
-    controller.abort();
-    await following;
+    expect(await renderer().render(daily, [])).toEqual(['01:00:00  Σ Costs of 2026-11-09: $0.4213 in 37 model calls · 1.25M tokens in, 31k out']);
+    const one = { ...daily, dailyCost: { day: '2026-11-09', calls: 1, inputTokens: 900, outputTokens: 50, cost: 2.5, currency: 'BRL' } };
+    expect(await renderer(false).render(one, [])).toEqual(['01:00:00  Σ Costs of 2026-11-09: 2.50 BRL in 1 model call · 900 tokens in, 50 out']);
   });
 });
 
 describe('stream', () => {
-  it('prints recent history, then new events, from the agent log', async () => {
+  it('prints recent highlights, then new ones as they are recorded', async () => {
     const dir = await tempDir();
-    const cfg = makeConfig({}, dir);
-    const log = (message: string, fields: LogFields, level: LogEntry['level'] = 'info') =>
-      `${formatLogLine(NOW, level, message, fields)}\n`;
-    await mkdir(cfg.paths.logDir, { recursive: true });
-    await writeFile(
-      cfg.paths.agentLog,
-      log('agent running', { name: 'Ane', engine: 'antigravity', model: 'gemini-3.8-flash-low' }) +
-        log('skipped message', { chat: OTHER_GROUP, reason: 'group not in group_allowlist' }, 'debug') +
-        log('queued message', { chat: BOB, id: 'M1', sender: 'Bob', kind: 'message' }),
-    );
+    const local = makeConfig({}, dir);
+    const writer = new AgentState(Store.open(local.paths.database));
+    writer.recordMessage(message({ chat: FAMILY, id: 'M1', senderName: 'Carol', text: 'vamos jantar sexta?' }), { process: true, kind: 'message' }, NOW);
+    writer.recordHighlight({ chat: FAMILY, chatName: 'Família', ids: ['M1'], text: 'convite' }, NOW);
+    writer.recordHighlight({ chat: FAMILY, chatName: 'Família', ids: ['M1'], text: 'convite de novo' }, NOW);
 
-    const output: string[] = [];
+    const lines: string[] = [];
     const controller = new AbortController();
     const running = stream(
-      cfg,
-      { all: false, text: true, verbose: false, lines: 20, color: false },
-      { write: (line) => output.push(line), signal: controller.signal, pollMs: 20, lookup },
+      local,
+      { lines: 1, text: true, color: false },
+      { write: (line) => lines.push(line), signal: controller.signal, pollMs: 10, lookup: archive, now: () => NOW },
     );
+    await waitFor(() => lines.some((line) => line.includes('convite de novo')));
+    expect(lines.some((line) => line.endsWith('↳ convite'))).toBe(false);
 
-    await expect.poll(() => output.length).toBe(3);
-    expect(output[1]).toContain('▶ Ane is running (antigravity, gemini-3.8-flash-low)');
-    expect(output[2]).toContain('📩 Bob: me passa o endereço?');
+    writer.recordHighlight({ chat: FAMILY, chatName: 'Família', ids: ['M1'], text: 'terceiro' }, NOW);
+    await waitFor(() => lines.some((line) => line.includes('↳ terceiro')));
+    writer.recordDailyCost({ day: '2026-11-09', calls: 2, inputTokens: 3_000, outputTokens: 200, cost: 0.003, currency: 'USD' }, NOW);
+    await waitFor(() => lines.some((line) => line.includes('Σ Costs of 2026-11-09')));
+    controller.abort();
+    await running;
+    expect(lines).toContain('          Carol: vamos jantar sexta?');
+    writer.store.close();
+  });
 
-    await appendFile(cfg.paths.agentLog, log('decision', { chat: BOB, actions: ['notify'] }));
-    await expect.poll(() => output.at(-1)).toContain('🧠 Bob: notify');
-
+  it('waits for the database, and explains how to get highlights when there are none', async () => {
+    const dir = await tempDir();
+    const local = makeConfig({}, join(dir, 'state'));
+    const lines: string[] = [];
+    const controller = new AbortController();
+    const running = stream(local, { lines: 10, text: true, color: false }, { write: (line) => lines.push(line), signal: controller.signal, pollMs: 10 });
+    await waitFor(() => lines.some((line) => line.startsWith('Waiting for')));
+    Store.open(local.paths.database).close();
+    await waitFor(() => lines.some((line) => line.startsWith('Nothing highlighted yet')));
     controller.abort();
     await running;
   });
 });
+
+async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > timeoutMs) throw new Error('timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}

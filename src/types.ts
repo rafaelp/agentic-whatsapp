@@ -45,7 +45,9 @@ export interface Batch {
 export type Action =
   | { type: 'notify'; text: string }
   | { type: 'reply'; text: string }
-  | { type: 'update_instructions'; content: string };
+  | { type: 'update_instructions'; content: string }
+  /** Shows messages of the batch in the owner's stream; `ids` empty means all of them. */
+  | { type: 'highlight'; text: string; ids: string[] };
 
 export interface Decision {
   actions: Action[];

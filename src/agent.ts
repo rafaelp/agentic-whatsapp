@@ -1,6 +1,6 @@
 import { type ActionContext, executePlan, planActions } from './actions.js';
 import { Batcher } from './batcher.js';
-import type { Config } from './config.js';
+import type { Config, RoutingConfig } from './config.js';
 import type { Attempt, DecisionMaker } from './decision.js';
 import type { InstructionsStore } from './instructions.js';
 import type { Logger } from './log.js';
@@ -8,8 +8,9 @@ import type { MediaKind, MediaProcessor } from './media.js';
 import { buildPrompt } from './prompt.js';
 import { type RoutingRules, routeMessage } from './router.js';
 import type { AgentState } from './state.js';
-import { dayKey } from './time.js';
-import type { ToolRegistry } from './tools.js';
+import { dayKey, localHour, previousDay } from './time.js';
+import type { LiveRouting } from './settings.js';
+import type { McpServer, ToolRegistry, ToolSet } from './tools.js';
 import type { Action, Batch, ChatMessage, Decision } from './types.js';
 import { type CallContext, NO_USAGE, PERIOD_NAMES, type UsageLedger, addUsage, formatMoney } from './usage.js';
 import { errorMessage } from './util.js';
@@ -20,6 +21,8 @@ const MAX_BATCH_SIZE = 30;
 /** Images and audio read per batch, and how many at a time. */
 const MAX_MEDIA_PER_BATCH = 10;
 const MEDIA_CONCURRENCY = 3;
+/** The local hour from which the stream shows the cost of the day before. */
+const DAILY_COST_HOUR = 1;
 
 export interface AgentEvents {
   /** A message passed routing and is waiting for its batch. */
@@ -38,6 +41,10 @@ export interface AgentDeps {
   tools?: ToolRegistry;
   /** Reads images and audio; absent when the engine cannot, or both are off. */
   media?: MediaProcessor;
+  /** The built-in server with the agent's own settings, offered for commands typed in the home chat. */
+  settingsServer?: McpServer;
+  /** [routing] as it is now in the config file; absent keeps the settings the agent started with. */
+  routing?: LiveRouting;
   instructions: InstructionsStore;
   log: Logger;
   dryRun?: boolean;
@@ -51,18 +58,10 @@ const roundCost = (cost: number): number => Math.round(cost * 1e6) / 1e6;
 /** Routes incoming messages, batches them per chat and runs one decision per batch, in order. */
 export class Agent {
   private readonly batcher: Batcher;
-  private readonly rules: RoutingRules;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: AgentDeps) {
-    const { agent, routing } = deps.config;
-    this.rules = {
-      agentName: agent.name,
-      homeChat: agent.homeChat,
-      directMessages: routing.directMessages,
-      groupAllowlist: routing.groupAllowlist,
-      maxMessageAgeMinutes: routing.maxMessageAgeMinutes,
-    };
+    const { routing } = deps.config;
     this.batcher = new Batcher({
       debounceMs: routing.debounceSeconds * 1000,
       maxBatchSize: MAX_BATCH_SIZE,
@@ -81,7 +80,7 @@ export class Agent {
       log.debug('skipped message', { chat: message.chat, id: message.id, reason: 'no content' });
       return;
     }
-    const route = routeMessage(message, this.rules, {
+    const route = routeMessage(message, this.rules(), {
       now: this.now(),
       isAgentOutgoing: (candidate) => this.isAgentOutgoing(candidate),
     });
@@ -128,8 +127,9 @@ export class Agent {
     const context: ActionContext = {
       chat: batch.chat,
       chatName: batch.chatName,
-      replyAllowed: invoked || config.routing.autoReplyChats.includes(batch.chat),
+      replyAllowed: invoked || this.routing().autoReplyChats.includes(batch.chat),
       ownerCommand: batch.messages.some((message) => message.kind === 'command' && !message.forwarded),
+      messageIds: batch.messages.map((message) => message.id),
     };
     const batchId = state.startBatch(batch, invoked, now);
     const money = (amount: number) => formatMoney(amount, config.costs.currency);
@@ -166,7 +166,7 @@ export class Agent {
     }
 
     batch = await this.readMedia(batch, batchId);
-    const tools = this.deps.tools?.forBatch(context.ownerCommand);
+    const tools = this.toolsFor(context);
     const prompt = buildPrompt({
       agent: config.agent,
       instructions: await this.deps.instructions.read(),
@@ -210,6 +210,57 @@ export class Agent {
     state.finishBatch(batchId, { status: 'decided', decision }, this.now());
     await this.execute(decision.actions, context, batchId);
     await this.warnNearLimits(context, batchId);
+  }
+
+  /** [routing] as it is now: changes from the home chat, or to the file, apply without a restart. */
+  private routing(): RoutingConfig {
+    return this.deps.routing?.current() ?? this.deps.config.routing;
+  }
+
+  private rules(): RoutingRules {
+    const { agent } = this.deps.config;
+    const routing = this.routing();
+    return {
+      agentName: agent.name,
+      homeChat: agent.homeChat,
+      directMessages: routing.directMessages,
+      groupAllowlist: routing.groupAllowlist,
+      maxMessageAgeMinutes: routing.maxMessageAgeMinutes,
+    };
+  }
+
+  /**
+   * The owner's skills and servers for the batch's scope, plus the settings server when the
+   * owner typed a command in the home chat, where nobody else writes.
+   */
+  private toolsFor(context: ActionContext): ToolSet | undefined {
+    const owned = this.deps.tools?.forBatch(context.ownerCommand);
+    const settings = this.deps.settingsServer;
+    const home = this.deps.config.agent.homeChat;
+    if (settings === undefined || !context.ownerCommand || home === '' || context.chat !== home) return owned;
+    return { mcp: [settings, ...(owned?.mcp ?? [])], skills: owned?.skills ?? [] };
+  }
+
+  /**
+   * Puts the cost of the day before in the stream, once, from 1 am local time on. The service
+   * calls this every minute and when it starts, so a report missed while it was off comes
+   * when it is back, as long as that is still the next day.
+   */
+  reportDailyCost(): void {
+    const { config, state, usage, log } = this.deps;
+    const now = this.now();
+    const zone = config.agent.timezone;
+    if (localHour(now, zone) < DAILY_COST_HOUR) return;
+    const day = previousDay(dayKey(now, zone));
+    try {
+      if (!state.markNotice(`daily-cost:${day}`, now)) return;
+      const totals = usage.totals('day', day);
+      const { calls, inputTokens, outputTokens, cost } = totals;
+      state.recordDailyCost({ day, calls, inputTokens, outputTokens, cost, currency: config.costs.currency }, now);
+      log.info('daily cost', { day, calls, inputTokens, outputTokens, cost: roundCost(cost) });
+    } catch (error) {
+      log.warn('could not report the daily cost', { day, error: errorMessage(error) });
+    }
   }
 
   /** Stores one run of the engine and logs it; returns its cost. */

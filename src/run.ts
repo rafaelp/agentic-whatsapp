@@ -12,6 +12,8 @@ import { MediaProcessor } from './media.js';
 import { createNotifier } from './notify.js';
 import { systemPrompt } from './prompt.js';
 import { startReceiver } from './receiver.js';
+import { settingsServer } from './settings-mcp.js';
+import { LiveRouting } from './settings.js';
 import { AgentState } from './state.js';
 import { ToolRegistry } from './tools.js';
 import { UsageLedger } from './usage.js';
@@ -20,6 +22,7 @@ import { SyncSupervisor, Wacli } from './wacli.js';
 
 const DRAIN_TIMEOUT_MS = 15_000;
 const PRUNE_EVERY_MS = 6 * 3_600_000;
+const DAILY_COST_CHECK_MS = 60_000;
 
 export interface RunOptions {
   dryRun: boolean;
@@ -40,7 +43,7 @@ export class StartupError extends Error {
  * Runs the agent until SIGINT or SIGTERM: a webhook receiver on localhost, then
  * `wacli sync --follow` pointed at it. The webhook secret is random on every start,
  * so it is never stored anywhere. Everything is logged to the agent log, which
- * `agentic-whatsapp stream` and `logs` follow.
+ * `agentic-whatsapp logs` follows.
  */
 export async function runAgent(config: Config, options: RunOptions): Promise<void> {
   const { paths, service } = config;
@@ -119,6 +122,8 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     usage,
     tools,
     media,
+    settingsServer: tools !== undefined && config.agent.settingsTools ? settingsServer(config, { dryRun: options.dryRun }) : undefined,
+    routing: new LiveRouting({ configFile: paths.configFile, stateDir: paths.stateDir, logDir: paths.logDir }, config.routing, log),
     instructions,
     log,
     dryRun: options.dryRun,
@@ -134,6 +139,10 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
       },
     },
   });
+  agent.reportDailyCost();
+  const costTimer = setInterval(() => agent.reportDailyCost(), DAILY_COST_CHECK_MS);
+  costTimer.unref();
+
   const secret = randomBytes(32).toString('hex');
   const receiver = await startReceiver({
     host: config.wacli.listenHost,
@@ -175,6 +184,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     service: options.service,
     directMessages: config.routing.directMessages,
     allowlistedGroups: config.routing.groupAllowlist.length,
+    settingsTools: tools !== undefined && config.agent.settingsTools,
     skills: tools?.skills().filter((skill) => skill.enabled).length,
     mcpServers: tools?.servers().filter((server) => server.enabled).length,
     media: media === undefined ? undefined : [config.media.images && 'images', config.media.audio && 'audio'].filter(Boolean),
@@ -192,6 +202,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   await Promise.race([agent.idle(), new Promise((resolve) => setTimeout(resolve, DRAIN_TIMEOUT_MS).unref())]);
   await sync.stop();
   clearInterval(pruneTimer);
+  clearInterval(costTimer);
   store.close();
   health.stopped();
   await health.save();

@@ -1,14 +1,57 @@
 import { readFile, rename } from 'node:fs/promises';
-import type { Store } from './db.js';
+import { json, num, type Row, type Store, text } from './db.js';
 import type { MediaResult } from './media.js';
 import type { Route } from './router.js';
 import type { Batch, ChatMessage, Decision } from './types.js';
-import { isNotFound, isRecord } from './util.js';
+import { asString, isNotFound, isRecord } from './util.js';
 
 const OUTGOING_TTL_MS = 10 * 60_000;
 
 export type BatchStatus = 'pending' | 'decided' | 'failed' | 'skipped';
 export type SentStatus = 'sent' | 'failed' | 'dry_run' | 'logged';
+
+export interface HighlightRecord {
+  batchId?: number;
+  chat: string;
+  chatName: string;
+  /** The highlighted messages of that chat. */
+  ids: string[];
+  /** Why they matter, in the model's words. */
+  text: string;
+}
+
+/** The model calls of one day, as the stream shows them the next morning. */
+export interface DailyCost {
+  /** YYYY-MM-DD */
+  day: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+  currency: string;
+}
+
+/**
+ * An entry of the stream: highlighted messages, or, with kind `daily_cost`, the cost of a
+ * day (with no chat, IDs or text).
+ */
+export interface Highlight extends HighlightRecord {
+  id: number;
+  at: Date;
+  kind: 'messages' | 'daily_cost';
+  dailyCost?: DailyCost;
+}
+
+/** A message as the database has it, for the stream. Text is empty when it was not kept. */
+export interface StoredText {
+  id: string;
+  sender: string;
+  senderName: string;
+  fromMe: boolean;
+  media: string;
+  text: string;
+  mediaText: string;
+}
 
 export interface SentRecord {
   batchId?: number;
@@ -129,6 +172,70 @@ export class AgentState {
     return texts;
   }
 
+  recordHighlight(record: HighlightRecord, at: Date = new Date()): number {
+    return this.store.run(
+      'INSERT INTO highlights (batch_id, at, chat, chat_name, message_ids, text) VALUES (?, ?, ?, ?, ?, ?)',
+      record.batchId,
+      at.toISOString(),
+      record.chat,
+      record.chatName,
+      JSON.stringify(record.ids),
+      this.options.saveText ? record.text : undefined,
+    ).id;
+  }
+
+  /** Puts the cost of a day in the stream. */
+  recordDailyCost(cost: DailyCost, at: Date = new Date()): number {
+    return this.store.run(
+      "INSERT INTO highlights (at, chat, kind, data) VALUES (?, '', 'daily_cost', ?)",
+      at.toISOString(),
+      JSON.stringify(cost),
+    ).id;
+  }
+
+  /** Highlights with an ID above `after`, oldest first. */
+  highlightsAfter(after: number, limit = 100): Highlight[] {
+    return this.store
+      .all('SELECT * FROM highlights WHERE id > ? ORDER BY id LIMIT ?', after, limit)
+      .map(highlightOf);
+  }
+
+  /** The ID of the newest highlight, 0 when there is none. */
+  lastHighlightId(): number {
+    return num(this.store.get('SELECT max(id) AS id FROM highlights')?.id);
+  }
+
+  /** The last `count` highlights, oldest first. */
+  recentHighlights(count: number): Highlight[] {
+    return this.store
+      .all('SELECT * FROM highlights ORDER BY id DESC LIMIT ?', count)
+      .map(highlightOf)
+      .reverse();
+  }
+
+  /** The stored messages of a chat with these IDs, in that order; unknown IDs are left out. */
+  messagesById(chat: string, ids: readonly string[]): StoredText[] {
+    return ids.flatMap((id) => {
+      const row = this.store.get(
+        'SELECT id, sender, sender_name, from_me, media, text, media_text FROM messages WHERE chat = ? AND id = ?',
+        chat,
+        id,
+      );
+      if (row === undefined) return [];
+      return [
+        {
+          id,
+          sender: text(row.sender),
+          senderName: text(row.sender_name),
+          fromMe: num(row.from_me) === 1,
+          media: text(row.media),
+          text: text(row.text),
+          mediaText: text(row.media_text),
+        },
+      ];
+    });
+  }
+
   /** Whether the agent sent the WhatsApp message with this ID. */
   isAgentSent(id: string): boolean {
     return this.store.get('SELECT 1 AS found FROM sent WHERE message_id = ? LIMIT 1', id) !== undefined;
@@ -156,8 +263,8 @@ export class AgentState {
   }
 
   /**
-   * Deletes message text, descriptions and transcripts, prompts, answers and sent text older
-   * than `before`. IDs, names, decisions, tokens and costs stay, so duplicates are still
+   * Deletes message text, descriptions and transcripts, prompts, answers, sent text and the
+   * reasons of highlights older than `before`. IDs, names, decisions, tokens and costs stay, so duplicates are still
    * recognized and costs still add up.
    */
   pruneText(before: Date): number {
@@ -173,6 +280,7 @@ export class AgentState {
           cutoff,
         ).changes +
         this.store.run('UPDATE sent SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
+        this.store.run('UPDATE highlights SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
         this.store.run(
           `UPDATE batches SET actions = (SELECT json_group_array(json_object('type', json_extract(value, '$.type')))
              FROM json_each(batches.actions))
@@ -243,4 +351,31 @@ export class AgentState {
 
 function outgoingKey(chat: string, text: string): string {
   return `${chat}\n${text.trim()}`;
+}
+
+function highlightOf(row: Row): Highlight {
+  return {
+    id: num(row.id),
+    at: new Date(text(row.at)),
+    batchId: row.batch_id === null ? undefined : num(row.batch_id),
+    chat: text(row.chat),
+    chatName: text(row.chat_name),
+    ids: json<unknown[]>(row.message_ids, []).filter((id): id is string => typeof id === 'string'),
+    text: text(row.text),
+    ...(text(row.kind) === 'daily_cost'
+      ? { kind: 'daily_cost', dailyCost: dailyCostOf(json<Record<string, unknown>>(row.data, {})) }
+      : { kind: 'messages' }),
+  };
+}
+
+function dailyCostOf(data: Record<string, unknown>): DailyCost {
+  const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+  return {
+    day: asString(data.day),
+    calls: count(data.calls),
+    inputTokens: count(data.inputTokens),
+    outputTokens: count(data.outputTokens),
+    cost: count(data.cost),
+    currency: asString(data.currency) || 'USD',
+  };
 }

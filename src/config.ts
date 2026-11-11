@@ -11,6 +11,8 @@ export interface AgentConfig {
   timezone: string;
   homeChat: string;
   messagePrefix: string;
+  /** Lets the agent change [routing] when the owner asks in the home chat (Antigravity only). */
+  settingsTools: boolean;
 }
 
 export interface RoutingConfig {
@@ -199,6 +201,7 @@ export function parseConfig(
     timezone,
     homeChat,
     messagePrefix: agentSection.string('message_prefix', defaultMessagePrefix(name)),
+    settingsTools: agentSection.boolean('settings_tools', true),
   };
   agentSection.finish();
 

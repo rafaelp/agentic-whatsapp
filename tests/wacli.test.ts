@@ -85,6 +85,30 @@ process.stdout.write(process.env.FAKE_STDOUT + '\\n');`,
     ]);
   });
 
+  it('finds chats by name, and looks one up, read-only', async () => {
+    const fake = await recordingWacli(
+      '{"success":true,"data":[{"jid":"120363000000000002@g.us","kind":"group","name":"Família"},{"jid":"' +
+        BOB +
+        '","kind":"dm","name":"Bob"},{"jid":"x@newsletter","kind":"newsletter","name":"News"},{"kind":"group"}],"error":null}',
+    );
+    const wacli = new Wacli(fake.command, '');
+    expect(await wacli.listChats('fam', 40)).toEqual([
+      { jid: '120363000000000002@g.us', kind: 'group', name: 'Família' },
+      { jid: BOB, kind: 'direct', name: 'Bob' },
+      { jid: 'x@newsletter', kind: 'other', name: 'News' },
+    ]);
+    expect(await fake.args()).toEqual(['--read-only', 'chats', 'list', '--query=fam', '--limit=40', '--json']);
+
+    const one = await recordingWacli(`{"success":true,"data":{"jid":"${BOB}","kind":"dm","name":"Bob"},"error":null}`);
+    expect(await new Wacli(one.command, '').chat(BOB)).toEqual({ jid: BOB, kind: 'direct', name: 'Bob' });
+    expect(await one.args()).toEqual(['--read-only', 'chats', 'show', `--jid=${BOB}`, '--json']);
+
+    const missing = await recordingWacli('{"success":false,"data":null,"error":"sql: no rows in result set"}');
+    expect(await new Wacli(missing.command, '').chat(BOB)).toBeNull();
+    const broken = await recordingWacli('{"success":false,"data":null,"error":"store locked"}');
+    await expect(new Wacli(broken.command, '').chat(BOB)).rejects.toThrow(/store locked/);
+  });
+
   it('raises the error wacli reports', async () => {
     const fake = await recordingWacli('{"success":false,"data":null,"error":"recipient not found"}');
     await expect(new Wacli(fake.command, '').sendText(BOB, 'oi')).rejects.toThrow(/recipient not found/);

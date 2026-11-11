@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Store } from '../src/db.js';
-import { costReport, recentDays, table } from '../src/report.js';
+import { costReport, costSummary, recentDays, table } from '../src/report.js';
 import { UsageLedger } from '../src/usage.js';
-import { BOB, makeConfig, NOW } from './helpers.js';
+import { BOB, FAMILY, makeConfig, NOW } from './helpers.js';
 
 const config = makeConfig({ costs: { max_per_day: 1 } });
 
@@ -46,6 +46,33 @@ describe('costReport', () => {
     const json = JSON.parse(costReport(config, ledgerWithCalls(), NOW, { days: 7, by: 'chat', json: true })[0] ?? '');
     expect(json.periods.day).toMatchObject({ key: '2026-11-10', calls: 2, limit: 1 });
     expect(json.breakdown.groups).toEqual([expect.objectContaining({ key: BOB, label: 'Bob', calls: 3 })]);
+  });
+
+  it('sums up every figure at once for the agent, with each breakdown cut short', () => {
+    const ledger = ledgerWithCalls();
+    ledger.record(
+      { attempt: 1, startedAt: NOW, durationMs: 1, status: 'ok', usage: { inputTokens: 1_000, outputTokens: 10, thinkingTokens: 0, cachedTokens: 0 }, tools: [] },
+      { chat: FAMILY, chatName: 'Família', purpose: 'audio' },
+    );
+    const summary = costSummary(config, ledger, NOW, { days: 2, maxGroups: 1 });
+    expect(summary).toMatchObject({
+      currency: 'USD',
+      model: 'gemini-3.8-flash-low',
+      prices: { inputPerMillion: 0.75, known: true },
+      periods: { day: { key: '2026-11-10', calls: 3, limit: 1 }, week: { limit: null } },
+      allTime: { calls: 4 },
+      billing: expect.stringMatching(/not billed per call/),
+      since: '2026-11-09',
+    });
+    const breakdowns = summary.breakdowns as Record<string, { key: string; label: string; calls: number }[]>;
+    expect(breakdowns.day?.map((group) => [group.key, group.calls])).toEqual([
+      ['2026-11-09', 1],
+      ['2026-11-10', 3],
+    ]);
+    expect(breakdowns.chat?.map((group) => group.label)).toEqual(['Bob']);
+    expect(breakdowns.model).toHaveLength(1);
+    expect(breakdowns.purpose?.map((group) => group.label)).toEqual(['decisions']);
+    expect(costSummary(config, undefined, NOW, { days: 1, maxGroups: 5 })).toMatchObject({ allTime: { calls: 0 }, breakdowns: { chat: [] } });
   });
 
   it('breaks costs down by purpose', () => {

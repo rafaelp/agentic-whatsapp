@@ -14,12 +14,12 @@ describe('Store', () => {
     const dir = await tempDir();
     const file = join(dir, 'state', 'agentic-whatsapp.db');
     const store = Store.open(file);
-    expect(store.version).toBe(2);
+    expect(store.version).toBe(4);
     store.setMeta('k', 'v');
     store.close();
 
     const again = Store.open(file);
-    expect(again.version).toBe(2);
+    expect(again.version).toBe(4);
     expect(again.meta('k')).toBe('v');
     again.close();
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -169,6 +169,48 @@ describe('AgentState', () => {
     expect(state.mediaTexts(BOB, ['V1', 'V2'])).toEqual(new Map([['V2', 'novo']]));
     expect(state.takeMediaFiles(cutoff)).toEqual(['/media/V1.ogg']);
     expect(state.takeMediaFiles(cutoff)).toEqual([]);
+  });
+
+  it('keeps highlights in order, with the messages they point at', () => {
+    const state = new AgentState(Store.open(null));
+    state.recordMessage(message({ id: 'M1', senderName: 'Bob', text: 'oi' }), queued, NOW);
+    state.recordMessage(message({ id: 'M2', senderName: 'Bob', text: '', mediaType: 'audio' }), queued, NOW);
+    state.recordMedia(BOB, 'M2', { kind: 'audio', text: 'manda o boleto' });
+    expect(state.lastHighlightId()).toBe(0);
+
+    const first = state.recordHighlight({ chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'saudação' }, NOW);
+    const second = state.recordHighlight({ batchId: 2, chat: BOB, chatName: 'Bob', ids: ['M2', 'GONE'], text: 'boleto' }, NOW);
+    expect(state.lastHighlightId()).toBe(second);
+    expect(state.recentHighlights(1).map((highlight) => highlight.id)).toEqual([second]);
+    expect(state.recentHighlights(5).map((highlight) => highlight.id)).toEqual([first, second]);
+    expect(state.highlightsAfter(first)).toEqual([
+      { id: second, at: NOW, batchId: 2, chat: BOB, chatName: 'Bob', ids: ['M2', 'GONE'], text: 'boleto', kind: 'messages' },
+    ]);
+    expect(state.messagesById(BOB, ['M2', 'GONE', 'M1'])).toEqual([
+      { id: 'M2', sender: BOB, senderName: 'Bob', fromMe: false, media: 'audio', text: '', mediaText: 'manda o boleto' },
+      { id: 'M1', sender: BOB, senderName: 'Bob', fromMe: false, media: '', text: 'oi', mediaText: '' },
+    ]);
+  });
+
+  it('puts the cost of a day in the stream, between highlights', () => {
+    const state = new AgentState(Store.open(null), { saveText: false });
+    state.recordHighlight({ chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'boleto' }, NOW);
+    const daily = { day: '2026-11-09', calls: 37, inputTokens: 1_250_000, outputTokens: 31_000, cost: 0.4213, currency: 'USD' };
+    const id = state.recordDailyCost(daily, NOW);
+    expect(state.lastHighlightId()).toBe(id);
+    expect(state.recentHighlights(5).map((entry) => entry.kind)).toEqual(['messages', 'daily_cost']);
+    expect(state.highlightsAfter(id - 1)).toEqual([{ id, at: NOW, chat: '', chatName: '', ids: [], text: '', kind: 'daily_cost', dailyCost: daily }]);
+  });
+
+  it('keeps the reason of a highlight only while texts are kept', () => {
+    const state = new AgentState(Store.open(null), { saveText: false });
+    state.recordHighlight({ chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'boleto' }, NOW);
+    expect(state.recentHighlights(1)[0]?.text).toBe('');
+
+    const kept = new AgentState(Store.open(null));
+    kept.recordHighlight({ chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'boleto' }, new Date('2026-01-01T00:00:00Z'));
+    expect(kept.pruneText(new Date('2026-06-01T00:00:00Z'))).toBe(1);
+    expect(kept.recentHighlights(1)[0]).toMatchObject({ ids: ['M1'], text: '' });
   });
 
   it('imports the state.json of earlier versions once', async () => {

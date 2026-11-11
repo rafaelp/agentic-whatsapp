@@ -18,7 +18,8 @@ const location = { configFile: '/home/me/.config/agentic-whatsapp/config.toml', 
 describe('parseConfig', () => {
   it('fills in defaults from just a name', () => {
     const config = parseConfig({ agent: { name: 'Ane' } }, location);
-    expect(config.agent).toMatchObject({ name: 'Ane', language: 'en', homeChat: '', messagePrefix: '🤖 Ane: ' });
+    expect(config.agent).toMatchObject({ name: 'Ane', language: 'en', homeChat: '', messagePrefix: '🤖 Ane: ', settingsTools: true });
+    expect(parseConfig({ agent: { name: 'Ane', settings_tools: false } }, location).agent.settingsTools).toBe(false);
     expect(config.routing).toEqual({
       directMessages: true,
       groupAllowlist: [],

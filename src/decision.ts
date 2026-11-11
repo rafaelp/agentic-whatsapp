@@ -33,6 +33,8 @@ export interface DecisionMaker {
 const MAX_ACTIONS = 5;
 const MAX_TEXT_LENGTH = 4_000;
 const MAX_INSTRUCTIONS_LENGTH = 20_000;
+const MAX_HIGHLIGHT_LENGTH = 500;
+const MAX_HIGHLIGHT_IDS = 30;
 
 /** JSON Schema of the decision, for engines that can enforce structured output. */
 export const DECISION_SCHEMA = {
@@ -43,9 +45,10 @@ export const DECISION_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          type: { type: 'string', enum: ['notify', 'reply', 'update_instructions'] },
+          type: { type: 'string', enum: ['notify', 'reply', 'update_instructions', 'highlight'] },
           text: { type: 'string' },
           content: { type: 'string' },
+          ids: { type: 'array', items: { type: 'string' } },
         },
         required: ['type'],
       },
@@ -93,6 +96,13 @@ export function decisionFromValue(value: unknown): Decision {
       const text = cleanText(raw.text, MAX_TEXT_LENGTH);
       if (text === '') warnings.push(`ignored a ${raw.type} action without text`);
       else actions.push({ type: raw.type, text });
+    } else if (raw.type === 'highlight') {
+      const text = cleanText(raw.text, MAX_HIGHLIGHT_LENGTH);
+      const ids = Array.isArray(raw.ids)
+        ? [...new Set(raw.ids.filter((id): id is string => typeof id === 'string' && id.trim() !== ''))].slice(0, MAX_HIGHLIGHT_IDS)
+        : [];
+      if (text === '' && ids.length === 0) warnings.push('ignored a highlight action without text or ids');
+      else actions.push({ type: 'highlight', text, ids });
     } else if (raw.type === 'update_instructions') {
       const content = cleanText(raw.content, MAX_INSTRUCTIONS_LENGTH);
       if (content === '') warnings.push('ignored an update_instructions action without content');

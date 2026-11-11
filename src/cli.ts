@@ -9,6 +9,7 @@ import { createNotifier } from './notify.js';
 import { runProcess } from './process.js';
 import { systemPrompt } from './prompt.js';
 import { runAgent, StartupError } from './run.js';
+import { serveSettings } from './settings-mcp.js';
 import { Store } from './db.js';
 import { mcpCommand, skillsCommand, splitConfigOption } from './manage.js';
 import { costReport } from './report.js';
@@ -24,6 +25,7 @@ import {
   stop,
   uninstall,
 } from './service.js';
+import { logs } from './logs.js';
 import { stream } from './stream.js';
 import { configTemplate, instructionsTemplate } from './templates.js';
 import { systemTimeZone } from './time.js';
@@ -46,11 +48,12 @@ Commands:
   stop        Stop the service until the next start or login
   restart     Restart the service, e.g. after changing the config
   status      Show the service, today's activity and recent errors
-  stream      Watch the agent live: messages arriving, decisions, sends (--all, --no-text, --lines N)
-  logs        Follow the raw log
+  stream      What Ane highlighted as your instructions ask, and each day's cost at 1 am, live (--no-text, --lines N)
+  logs        Watch everything the agent does, live (--all, --no-text, --lines N, --verbose; --raw for the raw log)
   costs       Tokens and costs of today, this week, this month (--days N, --by day|chat|model|purpose, --json)
   mcp         Manage the MCP servers the agent may use (list, add, show, tools, scope, enable, disable, remove)
   skills      Manage the agent's skills (list, add, show, scope, enable, disable, remove)
+  settings-mcp  The MCP server with the agent's own settings; Antigravity starts it (--dry-run)
   print       Print the plist that "install" writes
   help        Show this help
   version     Show the version
@@ -97,7 +100,8 @@ async function main(argv: string[]): Promise<number> {
       service: { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
       text: { type: 'boolean', default: true },
-      lines: { type: 'string', default: '20' },
+      lines: { type: 'string' },
+      raw: { type: 'boolean', default: false },
       days: { type: 'string', default: '7' },
       by: { type: 'string', default: 'day' },
       json: { type: 'boolean', default: false },
@@ -136,19 +140,25 @@ async function main(argv: string[]): Promise<number> {
     case 'status':
       print(await statusLines(await loadConfig(configFile)));
       return 0;
-    case 'stream': {
-      const lines = Number.parseInt(values.lines, 10);
+    case 'stream':
       await stream(await loadConfig(configFile), {
-        all: values.all,
         text: values.text,
-        verbose: values.verbose,
-        lines: Number.isFinite(lines) ? lines : 20,
+        lines: count(values.lines, 10),
         color: process.stdout.isTTY === true && process.env.NO_COLOR === undefined,
       });
       return 0;
-    }
     case 'logs':
-      followLog(await loadConfig(configFile));
+      if (values.raw) {
+        followLog(await loadConfig(configFile));
+        return 0;
+      }
+      await logs(await loadConfig(configFile), {
+        all: values.all,
+        text: values.text,
+        verbose: values.verbose,
+        lines: count(values.lines, 20),
+        color: process.stdout.isTTY === true && process.env.NO_COLOR === undefined,
+      });
       return 0;
     case 'costs': {
       const by = values.by;
@@ -164,6 +174,15 @@ async function main(argv: string[]): Promise<number> {
       } finally {
         opened?.store.close();
       }
+      return 0;
+    }
+    case 'settings-mcp': {
+      const config = await loadConfig(configFile);
+      await serveSettings(config, {
+        dryRun: values['dry-run'],
+        version,
+        chats: new Wacli(config.wacli.command, config.wacli.store),
+      });
       return 0;
     }
     case 'print':
@@ -308,6 +327,9 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
   if (kinds.length === 0) report(true, 'media', 'off: the model sees only the type of images and audio');
   else if (config.engine.kind !== 'antigravity') note('media', 'only engine.kind = "antigravity" reads images and audio');
   else report(true, 'media', `${kinds.join(', ')}, up to ${config.media.maxBytes / 1024 / 1024} MB, in ${config.paths.mediaDir}`);
+  if (!config.agent.settingsTools) report(true, 'settings', 'off: change [routing] in the config file');
+  else if (config.engine.kind !== 'antigravity') note('settings', 'only engine.kind = "antigravity" lets the agent change its settings');
+  else report(true, 'settings', 'on, for commands you type in the home chat');
 
   const { engine } = config;
   const label = engineLabel(engine.kind);
@@ -362,3 +384,9 @@ main(process.argv.slice(2)).then(
     process.exitCode = 1;
   },
 );
+
+/** A --lines value, or `fallback` when it is missing or not a number. */
+function count(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}

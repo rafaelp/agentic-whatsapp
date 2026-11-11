@@ -95,7 +95,7 @@ Unknown number, in a private chat:
 - **Sees images and hears voice notes.** Photos are described and audio is transcribed before Ane
   decides, so a voice note in the home chat is a command like any other.
 - **Knows what it costs.** Every call records its input, output, cached and thinking tokens and its
-  cost at Gemini API prices. `agentic-whatsapp costs` sums them up, the log and `stream` show them,
+  cost at Gemini API prices. `agentic-whatsapp costs` sums them up, the log and `logs` show them,
   and daily, weekly and monthly limits stop the model, with a warning before.
 - **Hard to talk into things.** Other people's messages are marked as data and JSON-encoded, so they
   cannot pose as instructions, and a forwarded message never counts as a command.
@@ -103,7 +103,13 @@ Unknown number, in a private chat:
 - **A proper background service.** `agentic-whatsapp install` keeps Ane running with launchd from
   login on, restarts it if it crashes, and leaves it down with a notification when something needs
   you, such as WhatsApp being unlinked. Logs rotate on their own.
-- **Watch it think.** `agentic-whatsapp stream` shows, live, every message arriving, what Ane decided
+- **Only what you asked to see.** Tell Ane "highlight the messages from Carol for me", and
+  `agentic-whatsapp stream` shows those messages live, with why they matter, and the cost of the
+  day before every morning at 1 am. Nothing else.
+- **Set it up from WhatsApp.** "Monitor the Family group" in the home chat: Ane finds the group,
+  adds it to the config file, comments intact, and reads it from the next message on. The same goes
+  for one-to-one chats and auto-replies, with no restart.
+- **Watch it think.** `agentic-whatsapp logs` shows, live, every message arriving, what Ane decided
   and what it sent. `agentic-whatsapp status` sums up the day.
 - **Tells you when it breaks.** A macOS notification when WhatsApp sync or the model keeps failing,
   and another when it is back.
@@ -147,11 +153,11 @@ Check everything and watch Ane think before letting it talk:
 agentic-whatsapp check --call     # one real model call
 agentic-whatsapp run --dry-run    # decides, but only logs what it would send
 agentic-whatsapp install          # the real thing, in the background from now on
-agentic-whatsapp stream           # watch messages arrive and Ane act on them
+agentic-whatsapp logs             # watch messages arrive and Ane act on them
 ```
 
 ```text
-$ agentic-whatsapp stream
+$ agentic-whatsapp logs
 Following ~/Library/Logs/agentic-whatsapp/agent.log · Ctrl+C to stop
 01:51:46  ▶ Ane is running (antigravity, gemini-3.8-flash-low)
 01:51:47  📩 Carla: Hi! The condo fee is due tomorrow, can you pay it by then?
@@ -207,6 +213,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | Any other chat | Put `@ane` anywhere in your message | "answer him with the address @ane" |
 | Forward to the home chat | Ask about someone else's message | Its content is data, never a command |
 | Anywhere | Ask it to change its rules | "@ane from now on, tell me about every invoice" |
+| The home chat | Ask it to change what it reads | "monitor the Family group", "stop reading my one-to-one chats" |
 
 > [!TIP]
 > Type `@ane` as plain text. In a group, WhatsApp may suggest a contact called Ane when you type `@`.
@@ -232,7 +239,9 @@ The plugin only needs wacli, and works with or without the agent. See the
 | --- | --- |
 | `notify`: message you in the home chat | Always. Without a home chat it is only logged. |
 | `reply`: message the chat, as you | Only in a chat where you invoked Ane with `@ane`, or one listed in `routing.auto_reply_chats`. Anywhere else, the reply is sent to you as a suggestion. |
+| `highlight`: show messages in your `stream` | When your instructions ask for it. Nothing is sent: it stays on your computer. See [The stream](#the-stream). |
 | `update_instructions`: rewrite its standing rules | Only when a command you typed (not forwarded) asks for it. The previous version is kept. |
+| Change its own settings | Only on a command you typed in the home chat: which groups it monitors, whether it reads one-to-one chats, where it may reply without being asked. The previous config file is kept. See [Its own settings](#its-own-settings). |
 | Read an image or audio file | Before deciding, for a message that reaches the model: that message's file only, in a run of its own. See [Images and audio](#images-and-audio). |
 | Use a skill or an MCP tool you enabled | While deciding, before any of the actions above. Only the tools you allowed, and by default only on a command you typed. See [Skills and MCP servers](#skills-and-mcp-servers). |
 
@@ -270,11 +279,12 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `agentic-whatsapp uninstall` | Stop the service and delete its plist |
 | `agentic-whatsapp start` / `stop` / `restart` | Control the installed service; `stop` lasts until the next start or login |
 | `agentic-whatsapp status` | Show the service, today's activity and calls, and recent errors |
-| `agentic-whatsapp stream` | Watch the agent live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown |
-| `agentic-whatsapp logs` | Follow the raw log |
+| `agentic-whatsapp stream` | Only the messages Ane highlighted for you, and the cost of each day at 1 am the next morning, live; `--no-text` hides message text, `--lines N` sets how many earlier entries to show (10) |
+| `agentic-whatsapp logs` | Watch everything the agent does, live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown, `--verbose` adds debug lines, `--raw` follows the raw log instead |
 | `agentic-whatsapp costs` | Tokens and costs of today, this week, this month and all time, with the limits; `--days N`, `--by day\|chat\|model\|purpose`, `--json` |
 | `agentic-whatsapp mcp` | Manage MCP servers: `list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp skills` | Manage skills: `list`, `add`, `show`, `scope`, `enable`, `disable`, `remove` |
+| `agentic-whatsapp settings-mcp` | The MCP server with Ane's own settings and costs. Antigravity starts it; you never need to |
 | `agentic-whatsapp print` | Print the plist that `install` writes |
 | `agentic-whatsapp version` | Print the version |
 
@@ -290,6 +300,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `~/.local/state/agentic-whatsapp/skills/` | Installed copies of your skills |
 | `~/.local/state/agentic-whatsapp/media/` | Images and audio Ane read, one folder per chat |
 | `~/.local/state/agentic-whatsapp/instructions-history/` | Every previous version of the instructions |
+| `~/.local/state/agentic-whatsapp/config-history/` | Every previous version of the config file Ane changed |
 | `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema, the empty workspace agy runs in, `workspace-tools/` with the enabled skills and MCP config, and the empty `workspace-media/` |
 | `~/.local/state/agentic-whatsapp/gemini/` | The same for Gemini CLI |
 
@@ -304,8 +315,8 @@ folder, under `logs/`. agentic-whatsapp never changes wacli's or the engine's ow
 ```bash
 agentic-whatsapp install    # starts now, and at every login
 agentic-whatsapp status     # is it up? what did it do today?
-agentic-whatsapp stream     # watch it live
-agentic-whatsapp restart    # after you change the config
+agentic-whatsapp logs       # watch it live
+agentic-whatsapp restart    # after you change the config ([routing] applies on its own)
 ```
 
 - `install` finds `wacli` and the engine on your current `PATH` and writes their folders into the
@@ -328,10 +339,42 @@ agentic-whatsapp restart    # after you change the config
 Copy [`contrib/systemd/agentic-whatsapp.service`](contrib/systemd/agentic-whatsapp.service) to
 `~/.config/systemd/user/`, adjust `ExecStart` and `PATH`, then run
 `systemctl --user enable --now agentic-whatsapp`. The service commands above are macOS only, but
-`stream`, `status` and `logs` work everywhere.
+`stream`, `logs` and `status` work everywhere.
 
 Ane only works while the computer is awake. Messages that arrive while it is off are handled when
 wacli catches up, as long as they are newer than `routing.max_message_age_minutes`.
+
+## The stream
+
+`agentic-whatsapp stream` shows only what you asked to see. Tell Ane in the home chat which messages
+matter to you, and it keeps that as one of its instructions:
+
+> @ane when Carol sends a message, highlight it for me
+
+From then on, when a message from Carol reaches the model, Ane highlights it, and the stream shows
+it with a line on why it matters. Nothing is sent on WhatsApp.
+
+```text
+$ agentic-whatsapp stream
+Highlights from Ane · Ctrl+C to stop
+18:07:28  ★ Family
+          Carol: Dinner at my place on Friday at 8?
+          ↳ Carol is inviting everyone to dinner on Friday
+18:07:34  ★ Carol
+          Carol: [audio] Hi! Can you bring the wine?
+          ↳ Carol asks you to bring wine
+01:00:00  Σ Costs of 2026-11-09: $0.4213 in 37 model calls · 1.25M tokens in, 31k out
+```
+
+- Any rule works: "highlight messages about the school", "highlight anything that mentions my
+  car". The model decides, message by message, following your instructions.
+- Only messages that reach the model can be highlighted, so a group must be in
+  `routing.group_allowlist`. Voice notes show their transcript, images their description.
+- Highlights are kept in the database, so the stream starts with the last ten (`--lines N`) and
+  survives restarts. `--no-text` shows who wrote and why, without the text.
+- Every day at 1 am, in `agent.timezone`, the stream shows what the day before cost. If the agent
+  was off at 1 am, the line comes when it is back, as long as it is still that next day.
+- `agentic-whatsapp logs` is the full view: every message arriving, every decision, every send.
 
 ## Costs
 
@@ -354,8 +397,12 @@ all time      611   5.8M     29k       0    $4.46
 
 - `--by chat`, `--by model` or `--by purpose` (decisions, images, audio) breaks the last `--days N`
   down instead of by day; `--json` prints it all as JSON.
+- Ask Ane in the home chat: "how much did you cost this week, and which chat cost the most?" It
+  reads the same figures with its `get_costs` tool and answers in a notification. See
+  [Its own settings](#its-own-settings).
+- Every morning at 1 am, `agentic-whatsapp stream` shows what the day before cost.
 - `status` shows today's, this week's and this month's cost. Each `decision` line of the log and of
-  `stream` carries the tokens and cost of its calls, and a `model call` line has the details of each
+  `logs` carries the tokens and cost of its calls, and a `model call` line has the details of each
   run, with the tools it used.
 - Set `costs.max_per_day`, `max_per_week` (Monday to Sunday) or `max_per_month` to stop calling the
   model when one is reached. You are told once in the home chat, and once before, at
@@ -389,7 +436,7 @@ agentic-whatsapp mcp disable calendar
 ```
 
 Then, in the home chat: "look up in my notes what the plumber charged last time". Ane calls
-`notes/search_notes`, reads the result and answers with a notification. The `stream` shows the
+`notes/search_notes`, reads the result and answers with a notification. `logs` shows the
 tools each call used.
 
 - **Scope.** By default a server or skill is only available on a command you typed (`--scope commands`).
@@ -405,6 +452,41 @@ tools each call used.
   watchdog kills any run that tries. `mcp list` and `mcp show` print only their names.
 - **Commands are stored by full path**, so the background service finds them with its short PATH.
 - Skills and MCP servers need `engine.kind = "antigravity"`. Gemini CLI always runs with every tool denied.
+
+## Its own settings
+
+Ane also has MCP tools of its own, for the settings you would otherwise edit by hand: which groups
+it monitors, whether it reads one-to-one chats, and where it may reply without being asked. It can
+also read what it costs. Ask in the home chat:
+
+> monitor the Family group
+
+or "how much did you cost this week?". For the group, Ane looks it up by name in the wacli archive,
+adds its ID to `routing.group_allowlist` and tells you. From the next message on, the group reaches
+the model, so your instructions apply to it.
+When more than one chat matches, it asks which one you mean. Your instructions alone cannot do this:
+"keep an eye on the Family group" as a rule changes nothing while the group is not monitored.
+
+| Tool | What it does |
+| --- | --- |
+| `get_settings` | The monitored groups, by name, whether one-to-one chats are read, and the auto-reply chats |
+| `find_chats` | Finds chats by name, with their IDs and whether they are monitored |
+| `monitor_group` / `stop_monitoring_group` | Adds a group to `routing.group_allowlist`, or takes it out |
+| `set_direct_messages` | Sets `routing.direct_messages` |
+| `set_auto_reply` | Adds a chat to `routing.auto_reply_chats`, or takes it out |
+| `get_costs` | Everything `agentic-whatsapp costs` knows, in one call: prices, today, this week, this month and all time with the limits, and the last days (7, up to 90) by day, chat, model and purpose |
+
+- **Only from the home chat.** The tools are offered for a command you typed in the home chat, where
+  nobody else writes, and never for other chats, other people's messages or forwarded ones.
+- **The config file stays yours.** Only those keys of `[routing]` change; comments and everything
+  else stay as you wrote them. The new file is checked before it is written, and the previous one is
+  kept in `config-history/`.
+- **No restart.** The agent reads `[routing]` again whenever the config file changes, by hand too.
+  Other sections still need `agentic-whatsapp restart`.
+- **IDs it can check.** A group must be in the wacli archive to be monitored, and a name is never
+  stored, only the ID.
+- With `run --dry-run`, the tools say what they would change and change nothing.
+- `agent.settings_tools = false` turns them off. They need `engine.kind = "antigravity"`.
 
 ## Images and audio
 
@@ -440,7 +522,8 @@ history.
 ## Configuration
 
 Settings live in `~/.config/agentic-whatsapp/config.toml`. Unknown settings are rejected, so a typo
-never passes silently.
+never passes silently. Changes to `[routing]` apply from the next message; the others need
+`agentic-whatsapp restart`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -449,6 +532,7 @@ never passes silently.
 | `agent.timezone` | system zone | Time zone for timestamps and for the daily limit. |
 | `agent.home_chat` | empty | ID of the chat where it notifies you. |
 | `agent.message_prefix` | `🤖 <name>: ` | Prepended to every message it sends. |
+| `agent.settings_tools` | `true` | Let Ane change `[routing]` when you ask in the home chat. See [Its own settings](#its-own-settings). |
 | `routing.direct_messages` | `true` | Send one-to-one conversations to the model. |
 | `routing.group_allowlist` | `[]` | Group IDs (`…@g.us`) whose messages are sent to the model. Names are not accepted, because anyone in a group can rename it. |
 | `routing.auto_reply_chats` | `[]` | Chats where it may reply to others without being invoked. |
@@ -528,7 +612,8 @@ agentic-whatsapp/
 │   ├── cli.ts             # The agentic-whatsapp command
 │   ├── run.ts             # Starts the receiver and wacli sync, stops cleanly
 │   ├── service.ts         # install, uninstall, start, stop, restart, status, logs, print
-│   ├── stream.ts          # agentic-whatsapp stream: the live view of the agent log
+│   ├── logs.ts            # agentic-whatsapp logs: the live view of the agent log
+│   ├── stream.ts          # agentic-whatsapp stream: the messages Ane highlighted, and daily costs
 │   ├── health.ts          # Failures in a row, notifications, health.json
 │   ├── notify.ts          # macOS notifications
 │   ├── agent.ts           # Routes, batches and decides, one batch at a time
@@ -550,6 +635,8 @@ agentic-whatsapp/
 │   ├── tools.ts           # Skills and MCP servers the agent may use
 │   ├── media.ts           # Downloads images and audio and has them described or transcribed
 │   ├── manage.ts          # agentic-whatsapp mcp and skills
+│   ├── settings.ts        # Edits [routing] in the config file, and reads it again when it changes
+│   ├── settings-mcp.ts    # The MCP server with the agent's own settings and costs
 │   └── …                  # config, templates, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables
 ```

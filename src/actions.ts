@@ -13,19 +13,23 @@ export interface ActionContext {
   replyAllowed: boolean;
   /** The batch has a command the owner typed (not forwarded), so instructions may change. */
   ownerCommand: boolean;
+  /** IDs of the batch's new messages, the only ones a highlight may point at. */
+  messageIds: readonly string[];
 }
 
 export type PlannedStep =
   | { kind: 'send'; to: string; text: string; purpose: 'notify' | 'reply' | 'suggestion' }
   | { kind: 'log'; text: string; reason: string }
   | { kind: 'write_instructions'; content: string }
+  | { kind: 'highlight'; chat: string; chatName: string; ids: string[]; text: string }
   | { kind: 'drop'; action: Action['type']; reason: string };
 
 /**
  * Applies the policy to what the model asked for. The model proposes; this decides:
  * notifications always go to the home chat, replies only where they are allowed
  * (otherwise they become a suggestion to the owner), and instructions only change
- * on a command the owner typed.
+ * on a command the owner typed. Highlights stay on this computer, so they are always allowed,
+ * but only for messages of the batch.
  */
 export function planActions(actions: readonly Action[], context: ActionContext, homeChat: string): PlannedStep[] {
   const toOwner = (text: string, purpose: 'notify' | 'suggestion'): PlannedStep =>
@@ -44,6 +48,17 @@ export function planActions(actions: readonly Action[], context: ActionContext, 
         return context.ownerCommand
           ? { kind: 'write_instructions', content: action.content }
           : { kind: 'drop', action: action.type, reason: 'instructions only change on a command the owner typed' };
+      case 'highlight': {
+        // IDs that are not new messages of this batch are ignored; with none left, the whole batch is highlighted.
+        const ids = action.ids.filter((id) => context.messageIds.includes(id));
+        return {
+          kind: 'highlight',
+          chat: context.chat,
+          chatName: context.chatName,
+          ids: ids.length > 0 ? ids : [...context.messageIds],
+          text: action.text,
+        };
+      }
     }
   });
 }
@@ -103,6 +118,11 @@ export async function executePlan(plan: readonly PlannedStep[], runtime: ActionR
         }
         await runtime.instructions.write(step.content);
         log.info('instructions updated', { file: runtime.instructions.file });
+        break;
+      case 'highlight':
+        // Nothing leaves the computer, so a dry run highlights too.
+        state.recordHighlight({ batchId, chat: step.chat, chatName: step.chatName, ids: step.ids, text: step.text });
+        log.info('highlight', { chat: step.chat, chatName: step.chatName || undefined, messages: step.ids.length });
         break;
       case 'drop':
         log.warn('dropped an action', { action: step.action, reason: step.reason });

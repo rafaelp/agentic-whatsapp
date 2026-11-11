@@ -24,6 +24,8 @@ export interface McpServer {
   enabled: boolean;
   addedAt: string;
   updatedAt: string;
+  /** What the server is for, shown to the model; only the built-in settings server has one. */
+  description?: string;
 }
 
 export interface Skill {
@@ -48,6 +50,9 @@ export interface ToolSet {
 export function hasTools(tools: ToolSet | undefined): tools is ToolSet {
   return tools !== undefined && (tools.mcp.length > 0 || tools.skills.length > 0);
 }
+
+/** The built-in server with the agent's own settings, a name the owner's servers cannot take. */
+export const SETTINGS_SERVER = 'agentic-whatsapp';
 
 /** Server and skill names end up in agy permission rules and folder names. */
 export const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -145,6 +150,9 @@ export class ToolRegistry {
   /** Adds a server, or replaces the one with the same name. */
   saveServer(input: McpInput): McpServer {
     requireName(input.name, 'MCP server');
+    if (input.name === SETTINGS_SERVER) {
+      throw new ToolError(`"${SETTINGS_SERVER}" is the name of the agent's own settings tools; pick another name`);
+    }
     if (input.transport === 'http') {
       if (!/^https?:\/\//.test(input.url ?? '')) throw new ToolError('An http server needs an http:// or https:// URL');
     } else if ((input.command ?? '') === '') {

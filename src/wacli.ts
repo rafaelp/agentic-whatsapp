@@ -70,6 +70,22 @@ export class Wacli implements WacliClient {
     };
   }
 
+  /** Chats whose name (or JID) matches `query`, from the local archive, read-only. */
+  async listChats(query: string, limit: number): Promise<ChatInfo[]> {
+    const data = await this.json(['--read-only', 'chats', 'list', `--query=${query}`, `--limit=${limit}`], 15_000);
+    return Array.isArray(data) ? data.flatMap(chatInfo) : [];
+  }
+
+  /** One chat of the local archive, read-only; null when the archive does not have it. */
+  async chat(jid: string): Promise<ChatInfo | null> {
+    try {
+      return chatInfo(await this.json(['--read-only', 'chats', 'show', `--jid=${jid}`], 10_000))[0] ?? null;
+    } catch (error) {
+      if (errorMessage(error).includes('no rows')) return null;
+      throw error;
+    }
+  }
+
   /** Text (or media caption) of one stored message, read-only; null when it cannot be read. */
   async messageText(chat: string, id: string): Promise<string | null> {
     try {
@@ -100,6 +116,19 @@ export class Wacli implements WacliClient {
     if (!envelope.success) throw new Error(`wacli ${args[0] ?? ''} failed: ${envelope.error ?? 'unknown error'}`);
     return envelope.data;
   }
+}
+
+/** A chat as `wacli chats list` and `chats show` describe it. */
+export interface ChatInfo {
+  jid: string;
+  kind: 'group' | 'direct' | 'other';
+  name: string;
+}
+
+function chatInfo(value: unknown): ChatInfo[] {
+  if (!isRecord(value) || asString(value.jid) === '') return [];
+  const kind = asString(value.kind);
+  return [{ jid: asString(value.jid), kind: kind === 'group' ? 'group' : kind === 'dm' ? 'direct' : 'other', name: asString(value.name) }];
 }
 
 /** Parses wacli's `{"success", "data", "error"}` JSON envelope from the last JSON line. */

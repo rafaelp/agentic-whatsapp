@@ -32,6 +32,7 @@ Each action is one of:
 - {"type": "notify", "text": "..."}: a private message to the owner. Use it for anything the owner should know, including answers to their commands.
 - {"type": "reply", "text": "..."}: a message in the current chat, sent as the owner. Use it only when <chat> says "reply_allowed": true and replying is what the owner wants. A reply that is not allowed is shown to the owner as a suggestion instead.
 - {"type": "update_instructions", "content": "..."}: replaces the standing instructions with a new complete version. Use it only when an owner command asks you to remember, change or forget a rule, and keep every rule the owner did not ask to change.
+- {"type": "highlight", "ids": ["..."], "text": "..."}: shows new messages to the owner in their stream, a live feed on their computer, without sending anything. Use it for the messages the instructions ask you to highlight, flag or keep an eye on. "ids" lists the "id" of each new message it is about; "text" says in a few words why they matter.
 
 Return {"actions": []} when nothing needs to happen. Most messages need nothing.
 
@@ -104,7 +105,8 @@ function toolsSection(tools: ToolSet | undefined): string[] {
   if (tools.mcp.length > 0) {
     lines.push('MCP tools, called with call_mcp_tool. Read the schema of a tool before its first call:');
     for (const server of tools.mcp) {
-      lines.push(`- server "${server.name}": ${server.tools.includes('*') ? 'all of its tools' : server.tools.join(', ')}`);
+      const names = server.tools.includes('*') ? 'all of its tools' : server.tools.join(', ');
+      lines.push(`- server "${server.name}": ${names}${server.description === undefined ? '' : `. It holds ${server.description}.`}`);
     }
   }
   if (tools.skills.length > 0) {

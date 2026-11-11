@@ -9,6 +9,7 @@ const context = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   chatName: 'Bob',
   replyAllowed: false,
   ownerCommand: false,
+  messageIds: ['M1', 'M2', 'M3'],
   ...overrides,
 });
 
@@ -47,6 +48,15 @@ describe('planActions', () => {
 });
 
 describe('outgoing text', () => {
+  it('highlights only messages of the batch, or all of them when none is named', () => {
+    expect(planActions([{ type: 'highlight', text: 'Bob pediu o boleto', ids: ['M2', 'OTHER'] }], context(), HOME)).toEqual([
+      { kind: 'highlight', chat: BOB, chatName: 'Bob', ids: ['M2'], text: 'Bob pediu o boleto' },
+    ]);
+    expect(planActions([{ type: 'highlight', text: 'tudo', ids: ['OTHER'] }], context(), '')).toEqual([
+      { kind: 'highlight', chat: BOB, chatName: 'Bob', ids: ['M1', 'M2', 'M3'], text: 'tudo' },
+    ]);
+  });
+
   it('removes the @ before the agent name so it cannot trigger itself', () => {
     expect(defuseMention('Sou a @Ane, prazer. @anelise fica.', 'Ane')).toBe('Sou a Ane, prazer. @anelise fica.');
     expect(formatOutgoing('oi @ane', 'Ane', '🤖 Ane: ')).toBe('🤖 Ane: oi ane');
@@ -99,6 +109,18 @@ describe('executePlan', () => {
     expect(await instructions.read()).toBe('');
     expect(log.has('info', 'dry run: would send')).toBe(true);
     expect(run.state.store.get('SELECT status FROM sent')).toEqual({ status: 'dry_run' });
+  });
+
+  it('records highlights, even in dry-run mode, since nothing leaves the computer', async () => {
+    const { state, log, run } = await runtime({ dryRun: true });
+    await executePlan([{ kind: 'highlight', chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'Bob pediu o boleto' }], {
+      ...run,
+      batchId: 4,
+    });
+    expect(state.recentHighlights(5)).toEqual([
+      expect.objectContaining({ batchId: 4, chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'Bob pediu o boleto' }),
+    ]);
+    expect(log.entries.find((entry) => entry.message === 'highlight')?.fields).toEqual({ chat: BOB, chatName: 'Bob', messages: 1 });
   });
 
   it('logs a failed send and carries on', async () => {

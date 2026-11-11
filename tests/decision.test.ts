@@ -60,12 +60,31 @@ describe('decisionFromValue', () => {
   });
 });
 
+describe('highlight actions', () => {
+  it('keep their reason and the IDs of the messages, deduplicated', () => {
+    const decision = decisionFromValue({
+      actions: [{ type: 'highlight', text: ' Bob pediu o boleto ', ids: ['M1', 'M1', 7, '', 'M2'] }],
+    });
+    expect(decision.actions).toEqual([{ type: 'highlight', text: 'Bob pediu o boleto', ids: ['M1', 'M2'] }]);
+  });
+
+  it('need a reason or some IDs', () => {
+    expect(decisionFromValue({ actions: [{ type: 'highlight', ids: ['M1'] }] }).actions).toEqual([
+      { type: 'highlight', text: '', ids: ['M1'] },
+    ]);
+    const empty = decisionFromValue({ actions: [{ type: 'highlight' }] });
+    expect(empty.actions).toEqual([]);
+    expect(empty.warnings).toEqual(['ignored a highlight action without text or ids']);
+  });
+});
+
 describe('DECISION_SCHEMA', () => {
   it('allows exactly the actions the policy knows', () => {
     expect(DECISION_SCHEMA.properties.actions.items.properties.type.enum).toEqual([
       'notify',
       'reply',
       'update_instructions',
+      'highlight',
     ]);
   });
 });

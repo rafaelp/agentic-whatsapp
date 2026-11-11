@@ -38,6 +38,7 @@ describe('ToolRegistry', () => {
     expect(() => tools.saveServer({ name: 'bad name', transport: 'stdio', command: 'x' })).toThrow(/names are/);
     expect(() => tools.saveServer({ name: 'web', transport: 'http', url: 'ftp://x' })).toThrow(/http:\/\//);
     expect(() => tools.saveServer({ name: 'local', transport: 'stdio', command: '' })).toThrow(/needs a command/);
+    expect(() => tools.saveServer({ name: 'agentic-whatsapp', transport: 'stdio', command: 'x' })).toThrow(/agent's own settings tools/);
   });
 
   it('installs a copy of a skill from its folder or its SKILL.md', async () => {
