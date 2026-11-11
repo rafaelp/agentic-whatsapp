@@ -14,7 +14,12 @@ export interface StreamOptions {
   /** Show the text of the highlighted messages. Off shows who wrote and why it matters. */
   text: boolean;
   color: boolean;
+  /** Clear the terminal, scrollback included, before the first line. */
+  clear: boolean;
 }
+
+/** Cursor home, clear the screen, clear the scrollback: what `clear` does in a macOS terminal. */
+export const CLEAR_SCREEN = '\x1b[H\x1b[2J\x1b[3J';
 
 /** Indent of the lines under a highlight's header, the width of "HH:MM:SS  ". */
 const INDENT = ' '.repeat(10);
@@ -90,7 +95,7 @@ export async function stream(
   const wacli = new Wacli(config.wacli.command, config.wacli.store);
   const renderer = new HighlightRenderer(config, options, io.lookup ?? ((chat, id) => wacli.messageText(chat, id)), io.now);
 
-  write(paint.dim(`Highlights from ${config.agent.name} · Ctrl+C to stop`));
+  write(`${options.clear ? CLEAR_SCREEN : ''}${paint.dim(`Highlights from ${config.agent.name} · Ctrl+C to stop`)}`);
   let waiting = false;
   while (!existsSync(config.paths.database)) {
     if (!waiting) write(paint.dim(`Waiting for ${config.paths.database}. Is the agent running? Check with: agentic-whatsapp status`));

@@ -20,6 +20,7 @@ describe('parseConfig', () => {
     const config = parseConfig({ agent: { name: 'Ane' } }, location);
     expect(config.agent).toMatchObject({ name: 'Ane', language: 'en', homeChat: '', messagePrefix: '🤖 Ane: ', settingsTools: true });
     expect(parseConfig({ agent: { name: 'Ane', settings_tools: false } }, location).agent.settingsTools).toBe(false);
+    expect(config.cli).toEqual({ allow: [], deny: [], scope: 'commands', timeoutSeconds: 60 });
     expect(config.routing).toEqual({
       directMessages: true,
       groupAllowlist: [],
@@ -141,6 +142,24 @@ describe('parseConfig', () => {
     expect(off.media).toEqual({ images: false, audio: false, maxBytes: 5 * 1024 * 1024 });
     expect(() => parseConfig({ agent: { name: 'Ane' }, media: { max_size_mb: 0 } }, location)).toThrow(/media.max_size_mb/);
     expect(() => parseConfig({ agent: { name: 'Ane' }, media: { video: true } }, location)).toThrow(/Unknown setting in \[media\]/);
+  });
+
+  it('reads [cli] rules as a program and the words a command starts with', () => {
+    const cli = parseConfig(
+      { agent: { name: 'Ane' }, cli: { allow: ['joplin  mknote', '/opt/bin/notes'], deny: ['joplin rmnote'], scope: 'home', timeout_seconds: 5 } },
+      location,
+    ).cli;
+    expect(cli).toEqual({
+      allow: [
+        { text: 'joplin mknote', program: 'joplin', args: ['mknote'] },
+        { text: '/opt/bin/notes', program: '/opt/bin/notes', args: [] },
+      ],
+      deny: [{ text: 'joplin rmnote', program: 'joplin', args: ['rmnote'] }],
+      scope: 'home',
+      timeoutSeconds: 5,
+    });
+    expect(() => parseConfig({ agent: { name: 'Ane' }, cli: { deny: ['bin/joplin'] } }, location)).toThrow(/cli.deny: "bin\/joplin" must be/);
+    expect(() => parseConfig({ agent: { name: 'Ane' }, cli: { scope: 'all' } }, location)).toThrow(/cli.scope must be "commands" or "home"/);
   });
 
   it('validates the time zone and the home chat', () => {

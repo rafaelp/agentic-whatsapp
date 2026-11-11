@@ -167,6 +167,28 @@ const MIGRATIONS = [
   ALTER TABLE highlights ADD COLUMN kind TEXT NOT NULL DEFAULT 'messages';
   ALTER TABLE highlights ADD COLUMN data TEXT;
   `,
+  `
+  -- Commands the agent ran, or tried to run, with run_cli. rule is the [cli] rule that allowed
+  -- it; args is the whole command as a JSON list, kept like other texts. status: ok, failed,
+  -- timeout, refused or dry_run.
+  CREATE TABLE commands (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    program TEXT NOT NULL,
+    rule TEXT NOT NULL DEFAULT '',
+    args TEXT,
+    status TEXT NOT NULL,
+    exit_code INTEGER,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    error TEXT
+  );
+  CREATE INDEX commands_at ON commands (at);
+  `,
+  `
+  -- The OAuth client of an http MCP server that signs in with OAuth, as a JSON object with
+  -- clientId and clientSecret. agy keeps the tokens.
+  ALTER TABLE mcp_servers ADD COLUMN oauth TEXT;
+  `,
 ];
 
 /**

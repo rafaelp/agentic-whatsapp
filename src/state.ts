@@ -53,6 +53,20 @@ export interface StoredText {
   mediaText: string;
 }
 
+export type CommandStatus = 'ok' | 'failed' | 'timeout' | 'refused' | 'dry_run';
+
+export interface CommandRecord {
+  program: string;
+  /** The [cli] allow rule that let it run; empty when refused. */
+  rule: string;
+  /** The whole command, program first. */
+  command: readonly string[];
+  status: CommandStatus;
+  exitCode?: number;
+  durationMs: number;
+  error?: string;
+}
+
 export interface SentRecord {
   batchId?: number;
   chat: string;
@@ -193,6 +207,21 @@ export class AgentState {
     ).id;
   }
 
+  /** Stores a command run_cli ran, or refused; its arguments only while texts are kept. */
+  recordCommand(record: CommandRecord, at: Date = new Date()): number {
+    return this.store.run(
+      'INSERT INTO commands (at, program, rule, args, status, exit_code, duration_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      at.toISOString(),
+      record.program,
+      record.rule,
+      this.options.saveText ? JSON.stringify(record.command) : undefined,
+      record.status,
+      record.exitCode,
+      Math.round(record.durationMs),
+      record.error,
+    ).id;
+  }
+
   /** Highlights with an ID above `after`, oldest first. */
   highlightsAfter(after: number, limit = 100): Highlight[] {
     return this.store
@@ -281,6 +310,7 @@ export class AgentState {
         ).changes +
         this.store.run('UPDATE sent SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
         this.store.run('UPDATE highlights SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
+        this.store.run('UPDATE commands SET args = NULL WHERE at < ? AND args IS NOT NULL', cutoff).changes +
         this.store.run(
           `UPDATE batches SET actions = (SELECT json_group_array(json_object('type', json_extract(value, '$.type')))
              FROM json_each(batches.actions))

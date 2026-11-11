@@ -110,6 +110,22 @@ images = true
 audio = true
 # Larger files are not downloaded.
 max_size_mb = 20
+
+[cli]
+# Command-line programs the agent may run for your commands, any program you choose, with
+# its run_cli tool and without a shell (Antigravity only). A rule is a program, by name or
+# full path, then the words a command must start with: "gh" allows every gh command,
+# "gh issue list" only that one. deny wins over allow, but only blocks the words it names,
+# so prefer narrow allow rules to a broad allow with denies. Empty: the agent runs nothing.
+# A skill (agentic-whatsapp skills add) can teach the agent how to use a program.
+# allow = ["gh issue list", "gh issue create", "joplin mknote", "joplin set", "/opt/tools/backup status"]
+# deny = ["gh repo delete"]
+allow = []
+deny = []
+# "commands": for a command you type, in any chat. "home": only in the home chat.
+scope = "commands"
+# A command still running after this long is stopped.
+timeout_seconds = 60
 `;
 }
 

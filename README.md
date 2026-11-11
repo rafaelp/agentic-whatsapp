@@ -106,6 +106,9 @@ Unknown number, in a private chat:
 - **Only what you asked to see.** Tell Ane "highlight the messages from Carol for me", and
   `agentic-whatsapp stream` shows those messages live, with why they matter, and the cost of the
   day before every morning at 1 am. Nothing else.
+- **Runs the command-line programs you allow.** Any CLI: `gh`, `joplin`, your own scripts. "@ane
+  make a note of this" or "@ane open an issue for this" in any chat, and Ane runs the commands you
+  listed in `[cli] allow`, without a shell, and records each one. Nothing runs unless you list it.
 - **Set it up from WhatsApp.** "Monitor the Family group" in the home chat: Ane finds the group,
   adds it to the config file, comments intact, and reads it from the next message on. The same goes
   for one-to-one chats and auto-replies, with no restart.
@@ -243,6 +246,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `update_instructions`: rewrite its standing rules | Only when a command you typed (not forwarded) asks for it. The previous version is kept. |
 | Change its own settings | Only on a command you typed in the home chat: which groups it monitors, whether it reads one-to-one chats, where it may reply without being asked. The previous config file is kept. See [Its own settings](#its-own-settings). |
 | Read an image or audio file | Before deciding, for a message that reaches the model: that message's file only, in a run of its own. See [Images and audio](#images-and-audio). |
+| Run a command-line program | Only the programs and subcommands listed in `[cli] allow`, on a command you typed. See [Command-line programs](#command-line-programs). |
 | Use a skill or an MCP tool you enabled | While deciding, before any of the actions above. Only the tools you allowed, and by default only on a command you typed. See [Skills and MCP servers](#skills-and-mcp-servers). |
 
 ## How a decision works
@@ -279,12 +283,13 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `agentic-whatsapp uninstall` | Stop the service and delete its plist |
 | `agentic-whatsapp start` / `stop` / `restart` | Control the installed service; `stop` lasts until the next start or login |
 | `agentic-whatsapp status` | Show the service, today's activity and calls, and recent errors |
-| `agentic-whatsapp stream` | Only the messages Ane highlighted for you, and the cost of each day at 1 am the next morning, live; `--no-text` hides message text, `--lines N` sets how many earlier entries to show (10) |
+| `agentic-whatsapp stream` | Only the messages Ane highlighted for you, and the cost of each day at 1 am the next morning, live; it clears the screen first (`--no-clear` keeps it), `--no-text` hides message text, `--lines N` sets how many earlier entries to show (10) |
 | `agentic-whatsapp logs` | Watch everything the agent does, live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown, `--verbose` adds debug lines, `--raw` follows the raw log instead |
 | `agentic-whatsapp costs` | Tokens and costs of today, this week, this month and all time, with the limits; `--days N`, `--by day\|chat\|model\|purpose`, `--json` |
 | `agentic-whatsapp mcp` | Manage MCP servers: `list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp skills` | Manage skills: `list`, `add`, `show`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp settings-mcp` | The MCP server with Ane's own settings and costs. Antigravity starts it; you never need to |
+| `agentic-whatsapp cli-mcp` | The MCP server that runs the programs `[cli]` allows. Antigravity starts it too |
 | `agentic-whatsapp print` | Print the plist that `install` writes |
 | `agentic-whatsapp version` | Print the version |
 
@@ -301,6 +306,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | `~/.local/state/agentic-whatsapp/media/` | Images and audio Ane read, one folder per chat |
 | `~/.local/state/agentic-whatsapp/instructions-history/` | Every previous version of the instructions |
 | `~/.local/state/agentic-whatsapp/config-history/` | Every previous version of the config file Ane changed |
+| `~/.local/state/agentic-whatsapp/cli/` | The folder the programs of `[cli]` run in |
 | `~/.local/state/agentic-whatsapp/antigravity/` | Session settings, decision schema, the empty workspace agy runs in, `workspace-tools/` with the enabled skills and MCP config, and the empty `workspace-media/` |
 | `~/.local/state/agentic-whatsapp/gemini/` | The same for Gemini CLI |
 
@@ -450,8 +456,35 @@ tools each call used.
 - **Credentials.** `--env` and `--header` values are stored in the database and in the MCP config of
   Ane's workspace, both readable only by your user. agy is told never to read that config, and the
   watchdog kills any run that tries. `mcp list` and `mcp show` print only their names.
+- **Servers that sign in with OAuth**, such as Google's Gmail server, take the OAuth client with
+  `--oauth-client-id` and `--oauth-client-secret`. Sign in once with `agentic-whatsapp mcp login
+  <name>`: it opens agy in Ane's own workspace, where you type `/mcp`, choose the server and
+  Authenticate. agy keeps the tokens. See [Gmail](#gmail) below.
 - **Commands are stored by full path**, so the background service finds them with its short PATH.
 - Skills and MCP servers need `engine.kind = "antigravity"`. Gemini CLI always runs with every tool denied.
+
+### Gmail
+
+Google runs an [MCP server for Gmail](https://developers.google.com/workspace/gmail/api/guides/configure-mcp-server)
+(in Developer Preview) that searches and reads threads, lists labels and drafts, labels messages
+and creates drafts. It cannot send: a draft waits for you in Gmail.
+
+1. Join the Google Workspace Developer Preview Program with the account Ane should read.
+2. In a Google Cloud project of that account, enable `gmail.googleapis.com` and
+   `gmailmcp.googleapis.com`, add the `gmail.readonly` and `gmail.compose` scopes to the OAuth
+   consent screen (Data Access), and create an OAuth client of type **Web application**, marked
+   for an AI-powered agent, with the redirect URI `https://antigravity.google/oauth-callback`.
+3. Add it, allowing only the tools you want, and sign in:
+
+```bash
+agentic-whatsapp mcp add --oauth-client-id <client ID> --oauth-client-secret <client secret> \
+  --tools search_threads,get_thread,list_labels,list_drafts,create_draft \
+  gmail https://gmailmcp.googleapis.com/mcp/v1
+agentic-whatsapp mcp login gmail
+```
+
+Then, in the home chat: "any email from the bank this week?" or "draft a reply to Carol's last email
+saying I'll be there".
 
 ## Its own settings
 
@@ -487,6 +520,63 @@ When more than one chat matches, it asks which one you mean. Your instructions a
   stored, only the ID.
 - With `run --dry-run`, the tools say what they would change and change nothing.
 - `agent.settings_tools = false` turns them off. They need `engine.kind = "antigravity"`.
+
+## Command-line programs
+
+`[cli]` lists the command-line programs Ane may run for you: any program on your computer, and
+only the commands you name. The model already knows common tools such as `gh` or `git`; for any
+other, add a [skill](#skills-and-mcp-servers) that explains it, or allow its help command so Ane
+can read it.
+
+```toml
+[cli]
+allow = [
+  "gh issue list", "gh issue view", "gh issue create",   # GitHub, without a skill
+  "joplin mknote", "joplin set", "joplin ls", "joplin cat", # Joplin notes, with its skill
+  "/Users/me/bin/backup status",                          # your own script, by full path
+]
+deny = ["joplin rmnote"]
+```
+
+```bash
+agentic-whatsapp skills add ~/agentic-joplin/plugins/agentic-joplin/skills/joplin-cli
+agentic-whatsapp install    # again, so the service finds the programs on its PATH
+agentic-whatsapp check      # lists each program and where it was found
+```
+
+Then, in a group where Carol just sent the address of a party: "@ane make a note of this". Ane
+reads the [joplin-cli skill](https://github.com/rafaelp/agentic-joplin), runs `joplin mknote
+"Pedro's party"`, finds the note's ID and sets its body, then tells you. "@ane how many issues are
+open in agentic-whatsapp?" runs `gh issue list`. `logs` shows each command:
+
+```text
+00:33:34  ⌨ ran joplin mknote (exit 0, 0.3s)
+00:33:37  ⌨ ran joplin ls (exit 0, 0s)
+00:33:40  ⌨ ran joplin set (exit 0, 0s)
+```
+
+- **Rules.** A rule is a program, by name or full path, then the words a command must start with:
+  `"gh"` allows every gh command, `"gh issue list"` only that one. `deny` wins over `allow`. A
+  deny rule only blocks the words it names: with `"gh"` allowed, `deny = ["gh repo delete"]` does
+  not stop `gh api -X DELETE repos/me/x`, which does the same. Prefer narrow allow rules.
+- **No shell.** The model calls Ane's `run_cli` tool with the program and each argument as a list.
+  Nothing is interpreted: no pipes, redirections, variables or `$(...)`, so text from a message is
+  only ever an argument. agy's own command tool stays denied.
+- **Your commands only.** `run_cli` is offered for a command you typed: in any chat with
+  `scope = "commands"` (the default), only in the home chat with `scope = "home"`. Never for other
+  people's messages, or for messages you forwarded.
+- **Recorded.** Every command, run or refused, goes to the `commands` table of the database with
+  the rule that allowed it and its exit code; its arguments are kept like other texts, following
+  `[storage]`. The log gets the program and the rule, never the arguments.
+- **Bounded.** A command runs in Ane's `cli/` folder, with stdin closed, so a question it asks gets
+  no answer instead of hanging, and is stopped after `timeout_seconds`. The model gets the first
+  8,000 characters of its output.
+- **PATH.** The service has a short PATH. `agentic-whatsapp install` adds the folders of the
+  programs `[cli]` names, and `check` says when one is missing. A program installed for another
+  Node version (mise, nvm, asdf) runs on that version: its own folder goes first on its PATH.
+- `[cli]` changes need `agentic-whatsapp restart`. With `run --dry-run`, nothing is run.
+- Allowing a shell or an interpreter (`bash`, `python3`, `env`, `npx`…) lets Ane run anything your
+  user can; `check` warns about it.
 
 ## Images and audio
 
@@ -566,6 +656,10 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `media.images` | `true` | Describe the images of messages that reach the model. |
 | `media.audio` | `true` | Transcribe their audio and voice notes. |
 | `media.max_size_mb` | `20` | Larger files are not downloaded. |
+| `cli.allow` | `[]` | Commands Ane may run: a program, by name or full path, then the words a command must start with. See [Command-line programs](#command-line-programs). |
+| `cli.deny` | `[]` | Commands it may never run, in the same form; they win over `allow`. |
+| `cli.scope` | `commands` | `commands`: on a command you type, in any chat. `home`: only in the home chat. |
+| `cli.timeout_seconds` | `60` | A command still running after this long is stopped. |
 
 ## Before you use it
 
@@ -637,6 +731,8 @@ agentic-whatsapp/
 │   ├── manage.ts          # agentic-whatsapp mcp and skills
 │   ├── settings.ts        # Edits [routing] in the config file, and reads it again when it changes
 │   ├── settings-mcp.ts    # The MCP server with the agent's own settings and costs
+│   ├── commands.ts        # run_cli: runs the programs [cli] allows, and its MCP server
+│   ├── command-rules.ts   # [cli] allow and deny rules
 │   └── …                  # config, templates, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables
 ```

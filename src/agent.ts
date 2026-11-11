@@ -43,6 +43,8 @@ export interface AgentDeps {
   media?: MediaProcessor;
   /** The built-in server with the agent's own settings, offered for commands typed in the home chat. */
   settingsServer?: McpServer;
+  /** The built-in server that runs the programs [cli] allows, offered for commands the owner typed. */
+  cliServer?: McpServer;
   /** [routing] as it is now in the config file; absent keeps the settings the agent started with. */
   routing?: LiveRouting;
   instructions: InstructionsStore;
@@ -230,15 +232,21 @@ export class Agent {
   }
 
   /**
-   * The owner's skills and servers for the batch's scope, plus the settings server when the
-   * owner typed a command in the home chat, where nobody else writes.
+   * The owner's skills and servers for the batch's scope, plus the built-in servers on a command
+   * the owner typed: the CLI server (in the home chat only with [cli] scope "home"), and the
+   * settings server in the home chat, where nobody else writes.
    */
   private toolsFor(context: ActionContext): ToolSet | undefined {
     const owned = this.deps.tools?.forBatch(context.ownerCommand);
-    const settings = this.deps.settingsServer;
-    const home = this.deps.config.agent.homeChat;
-    if (settings === undefined || !context.ownerCommand || home === '' || context.chat !== home) return owned;
-    return { mcp: [settings, ...(owned?.mcp ?? [])], skills: owned?.skills ?? [] };
+    if (!context.ownerCommand) return owned;
+    const { settingsServer, cliServer, config } = this.deps;
+    const home = config.agent.homeChat !== '' && context.chat === config.agent.homeChat;
+    const builtIn = [
+      ...(settingsServer !== undefined && home ? [settingsServer] : []),
+      ...(cliServer !== undefined && (home || config.cli.scope === 'commands') ? [cliServer] : []),
+    ];
+    if (builtIn.length === 0) return owned;
+    return { mcp: [...builtIn, ...(owned?.mcp ?? [])], skills: owned?.skills ?? [] };
   }
 
   /**

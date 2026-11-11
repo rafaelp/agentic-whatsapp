@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { AntigravityCli } from './antigravity.js';
 import type { Config } from './config.js';
 import { Store } from './db.js';
 import { table } from './report.js';
@@ -28,10 +30,13 @@ export const MCP_USAGE = `Usage: agentic-whatsapp mcp <command>
                                     Add or replace a server. Flags come before <name>:
                                       --env KEY=value    environment variable (repeatable)
                                       --header "K: v"    HTTP header (repeatable)
+                                      --oauth-client-id ID --oauth-client-secret S
+                                                         an http server that signs in with OAuth
                                       --type stdio|http  usually detected from <commandOrUrl>
                                       --tools a,b        tools the agent may call (default: all)
                                       --scope commands|all  when it may use them (default: commands)
                                       --disabled         add it turned off
+  login <name>                      Sign in to a server that uses OAuth, once, in agy (/mcp)
   show <name>                       Show a server and the tools Antigravity found on it
   tools <name> <tool...|*>          Set the tools the agent may call
   scope <name> commands|all         Set when the agent may use the server
@@ -51,7 +56,7 @@ export const SKILLS_USAGE = `Usage: agentic-whatsapp skills <command>
 `;
 
 const MCP_ADD_FLAGS = {
-  withValue: new Set(['--env', '-e', '--header', '-H', '--type', '-t', '--tools', '--scope']),
+  withValue: new Set(['--env', '-e', '--header', '-H', '--type', '-t', '--tools', '--scope', '--oauth-client-id', '--oauth-client-secret']),
   booleans: new Set(['--disabled']),
 };
 const SKILLS_ADD_FLAGS = { withValue: new Set(['--scope']), booleans: new Set(['--disabled']) };
@@ -92,8 +97,25 @@ function engineNote(config: Config): string[] {
     : ['! engine.kind is "gemini-cli": skills and MCP servers only work with engine.kind = "antigravity".'];
 }
 
+/** How `mcp login` talks to the person and starts agy; replaced in tests. */
+export interface LoginIo {
+  write: (line: string) => void;
+  /** Runs agy in `cwd` on this terminal and returns its exit code. */
+  interactive: (command: string, cwd: string) => number | null;
+}
+
+const terminalIo: LoginIo = {
+  write: (line) => process.stdout.write(`${line}\n`),
+  interactive: (command, cwd) => spawnSync(command, [], { cwd, stdio: 'inherit' }).status,
+};
+
 /** `agentic-whatsapp mcp ...`: returns the lines to print. */
-export async function mcpCommand(config: Config, args: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+export async function mcpCommand(
+  config: Config,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+  io: LoginIo = terminalIo,
+): Promise<string[]> {
   const [command = 'list', ...rest] = args;
   if (command === 'help' || command === '--help') return [MCP_USAGE];
   const { store, registry } = openRegistry(config);
@@ -123,6 +145,22 @@ export async function mcpCommand(config: Config, args: readonly string[], env: N
       case 'show': {
         const server = registry.server(requireArg(rest, 'name'));
         return describeServer(server, await seenTools(server.name));
+      }
+      case 'login': {
+        const server = registry.server(requireArg(rest, 'name'));
+        if (server.transport !== 'http') throw new ToolError(`${server.name} is a stdio server: only http servers sign in`);
+        if (config.engine.kind !== 'antigravity') throw new ToolError('Signing in to MCP servers needs engine.kind = "antigravity"');
+        const engine = new AntigravityCli(config.engine, config.paths.stateDir, '');
+        const cwd = await engine.prepareLogin(server);
+        io.write(`Starting agy in ${cwd}, the folder where the agent uses ${server.name}.`);
+        io.write(`In agy: type /mcp, choose ${server.name}, then Authenticate. Sign in with the browser, paste the`);
+        io.write('code back into agy, and quit agy once the server shows "Authed".');
+        const code = io.interactive(config.engine.command, cwd);
+        return [
+          `agy exited${code === 0 || code === null ? '' : ` with code ${code}`}.`,
+          `If ${server.name} showed "Authed", the agent can use it from the next message.`,
+          `Check with a command in the home chat, then: agentic-whatsapp mcp show ${server.name}`,
+        ];
       }
       case 'tools': {
         const [name = '', ...tools] = rest;
@@ -227,6 +265,13 @@ export function parseMcpAdd(args: readonly string[]): McpInput {
   if (type === 'stdio' && Object.keys(headers).length > 0) throw new ToolError('--header is only for http servers');
   if (type === 'http' && Object.keys(env).length > 0) throw new ToolError('--env is only for stdio servers');
 
+  const clientId = values('--oauth-client-id').at(-1);
+  const clientSecret = values('--oauth-client-secret').at(-1);
+  if ((clientId === undefined) !== (clientSecret === undefined)) {
+    throw new ToolError('Give both --oauth-client-id and --oauth-client-secret');
+  }
+  if (type === 'stdio' && clientId !== undefined) throw new ToolError('OAuth is only for http servers');
+
   const tools = values('--tools');
   const scope = values('--scope').at(-1);
   return {
@@ -240,6 +285,7 @@ export function parseMcpAdd(args: readonly string[]): McpInput {
     tools: tools.length === 0 ? ['*'] : parseToolList(tools),
     scope: scope === undefined ? 'commands' : parseScope(scope),
     enabled: flags['--disabled'] === undefined,
+    ...(clientId === undefined || clientSecret === undefined ? {} : { oauth: { clientId, clientSecret } }),
   };
 }
 
@@ -321,6 +367,7 @@ function describeServer(server: McpServer, seen: readonly string[]): string[] {
     `  transport  ${server.transport}`,
     server.transport === 'http' ? `  url        ${server.url}` : `  command    ${[server.command, ...server.args].join(' ')}`,
     server.transport === 'http' ? `  headers    ${masked(server.headers)}` : `  env        ${masked(server.env)}`,
+    ...(server.oauth === undefined ? [] : [`  oauth      client ${server.oauth.clientId}, secret ••••; sign in with: agentic-whatsapp mcp login ${server.name}`]),
     `  tools      ${toolList(server)}`,
     `  scope      ${SCOPE_NOTE[server.scope]}`,
   ];

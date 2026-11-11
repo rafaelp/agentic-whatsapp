@@ -38,7 +38,17 @@ describe('ToolRegistry', () => {
     expect(() => tools.saveServer({ name: 'bad name', transport: 'stdio', command: 'x' })).toThrow(/names are/);
     expect(() => tools.saveServer({ name: 'web', transport: 'http', url: 'ftp://x' })).toThrow(/http:\/\//);
     expect(() => tools.saveServer({ name: 'local', transport: 'stdio', command: '' })).toThrow(/needs a command/);
-    expect(() => tools.saveServer({ name: 'agentic-whatsapp', transport: 'stdio', command: 'x' })).toThrow(/agent's own settings tools/);
+    expect(() => tools.saveServer({ name: 'agentic-whatsapp', transport: 'stdio', command: 'x' })).toThrow(/agent's own tool servers/);
+    expect(() => tools.saveServer({ name: 'agentic-whatsapp-cli', transport: 'stdio', command: 'x' })).toThrow(/agent's own tool servers/);
+    expect(() => tools.saveServer({ name: 'x', transport: 'stdio', command: 'x', oauth: { clientId: 'a', clientSecret: 'b' } })).toThrow(/only for http/);
+    expect(() => tools.saveServer({ name: 'x', transport: 'http', url: 'https://x.example', oauth: { clientId: 'a', clientSecret: '' } })).toThrow(
+      /both a client ID and a client secret/,
+    );
+    expect(tools.saveServer({ name: 'gmail', transport: 'http', url: 'https://x.example', oauth: { clientId: 'a', clientSecret: 'b' } }).oauth).toEqual({
+      clientId: 'a',
+      clientSecret: 'b',
+    });
+    expect(tools.saveServer({ name: 'gmail', transport: 'http', url: 'https://x.example' }).oauth).toBeUndefined();
   });
 
   it('installs a copy of a skill from its folder or its SKILL.md', async () => {
@@ -125,6 +135,12 @@ describe('parsing', () => {
       scope: 'all',
       enabled: false,
     });
+    expect(parseMcpAdd(['--oauth-client-id', 'id', '--oauth-client-secret=s', 'gmail', 'https://gmailmcp.googleapis.com/mcp/v1'])).toMatchObject({
+      transport: 'http',
+      oauth: { clientId: 'id', clientSecret: 's' },
+    });
+    expect(() => parseMcpAdd(['--oauth-client-id', 'id', 'gmail', 'https://x.example/mcp'])).toThrow(/both --oauth-client-id and --oauth-client-secret/);
+    expect(() => parseMcpAdd(['--oauth-client-id', 'id', '--oauth-client-secret', 's', 'notes', 'cmd'])).toThrow(/only for http/);
     expect(parseMcpAdd(['--', 'odd', 'cmd']).command).toBe('cmd');
     expect(() => parseMcpAdd(['notes'])).toThrow(/Name the server/);
     expect(() => parseMcpAdd(['--env', 'nope', 'notes', 'cmd'])).toThrow(/KEY=value/);
@@ -168,6 +184,30 @@ describe('mcp and skills commands', () => {
     expect((await mcpCommand(config, []))[0]).toMatch(/^No MCP servers/);
     await expect(mcpCommand(config, ['show', 'notes'])).rejects.toThrow(/No MCP server named "notes"/);
     await expect(mcpCommand(config, ['frobnicate'])).rejects.toThrow(/Unknown mcp command/);
+  });
+
+  it('keeps the OAuth client of a server, never prints its secret, and signs in in the agent workspace', async () => {
+    const dir = await tempDir();
+    const config = makeConfig({}, dir);
+    const args = ['add', '--oauth-client-id', 'client.apps', '--oauth-client-secret', 'topsecret', '--tools', 'search_threads,get_thread'];
+    const added = await mcpCommand(config, [...args, 'gmail', 'https://gmailmcp.googleapis.com/mcp/v1']);
+    expect(added.join('\n')).toContain('oauth      client client.apps, secret ••••; sign in with: agentic-whatsapp mcp login gmail');
+    expect(added.join('\n')).not.toContain('topsecret');
+
+    const written: string[] = [];
+    const runs: { command: string; cwd: string }[] = [];
+    const io = { write: (line: string) => written.push(line), interactive: (command: string, cwd: string) => (runs.push({ command, cwd }), 0) };
+    const lines = await mcpCommand(config, ['login', 'gmail'], process.env, io);
+    const workspace = join(dir, 'antigravity', 'workspace-tools');
+    expect(runs).toEqual([{ command: 'agy', cwd: workspace }]);
+    expect(written.join('\n')).toContain('type /mcp, choose gmail, then Authenticate');
+    expect(lines[0]).toBe('agy exited.');
+    expect(JSON.parse(await readFile(join(workspace, '.agents', 'mcp_config.json'), 'utf8'))).toEqual({
+      mcpServers: { gmail: { serverUrl: 'https://gmailmcp.googleapis.com/mcp/v1', oauth: { clientId: 'client.apps', clientSecret: 'topsecret' } } },
+    });
+
+    await mcpCommand(config, ['add', 'local', '/bin/echo'], { PATH: '/bin' });
+    await expect(mcpCommand(config, ['login', 'local'], process.env, io)).rejects.toThrow(/only http servers sign in/);
   });
 
   it('warns when the engine cannot use them', async () => {

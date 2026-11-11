@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { EngineConfig } from './config.js';
@@ -82,12 +82,13 @@ export function mcpGrants(servers: readonly McpServer[]): string[] {
   );
 }
 
-/** The `.agents/mcp_config.json` agy reads in its workspace. */
+/** The `.agents/mcp_config.json` agy reads in its workspace, in the format `agy mcp add` writes. */
 export function mcpConfig(servers: readonly McpServer[]): { mcpServers: Record<string, unknown> } {
   const entries = servers.map((server) => {
     if (server.transport === 'http') {
       const headers = Object.keys(server.headers).length > 0 ? { headers: server.headers } : {};
-      return [server.name, { url: server.url, ...headers }];
+      const oauth = server.oauth === undefined ? {} : { oauth: { clientId: server.oauth.clientId, clientSecret: server.oauth.clientSecret } };
+      return [server.name, { serverUrl: server.url, ...headers, ...oauth }];
     }
     const env = Object.keys(server.env).length > 0 ? { env: server.env } : {};
     return [server.name, { command: server.command, args: server.args, ...env }];
@@ -337,9 +338,11 @@ export class AntigravityCli implements DecisionMaker, MediaReader {
       tools.mcp.map((server) => [server.name, server.updatedAt]),
       tools.skills.map((skill) => [skill.name, skill.updatedAt]),
     ]);
-    if (key === this.synced) return;
+    const servers = `${JSON.stringify(mcpConfig(tools.mcp), null, 2)}\n`;
+    // `mcp login` writes its own MCP config here, so the file is checked too.
+    if (key === this.synced && (await readFile(this.mcpConfigFile, 'utf8').catch(() => '')) === servers) return;
     await mkdir(join(this.toolsWorkspace, '.agents'), { recursive: true, mode: 0o700 });
-    await writeFileAtomic(this.mcpConfigFile, `${JSON.stringify(mcpConfig(tools.mcp), null, 2)}\n`);
+    await writeFileAtomic(this.mcpConfigFile, servers);
     await rm(this.skillsDir, { recursive: true, force: true });
     await mkdir(this.skillsDir, { recursive: true, mode: 0o700 });
     for (const skill of tools.skills) {
@@ -349,6 +352,18 @@ export class AntigravityCli implements DecisionMaker, MediaReader {
     await writeFileAtomic(this.toolSettingsFile, `${JSON.stringify(settings, null, 2)}\n`);
     this.toolsRealpath = await realpath(this.toolsWorkspace);
     this.synced = key;
+  }
+
+  /**
+   * Gets the tools workspace ready for signing in to one server by hand: its MCP config holds
+   * only that server, defined as in the agent's own runs, so agy keeps the tokens where those
+   * runs find them. Returns the folder to start agy in.
+   */
+  async prepareLogin(server: McpServer): Promise<string> {
+    await mkdir(join(this.toolsWorkspace, '.agents'), { recursive: true, mode: 0o700 });
+    await writeFileAtomic(this.mcpConfigFile, `${JSON.stringify(mcpConfig([server]), null, 2)}\n`);
+    this.synced = undefined;
+    return this.toolsWorkspace;
   }
 
   private toolGuard(tools: ToolSet): Guard {

@@ -9,6 +9,7 @@ import { createNotifier } from './notify.js';
 import { runProcess } from './process.js';
 import { systemPrompt } from './prompt.js';
 import { runAgent, StartupError } from './run.js';
+import { cliCheck, serveCli } from './commands.js';
 import { serveSettings } from './settings-mcp.js';
 import { Store } from './db.js';
 import { mcpCommand, skillsCommand, splitConfigOption } from './manage.js';
@@ -20,6 +21,7 @@ import {
   plistFor,
   resolveExecutable,
   restart,
+  servicePath,
   start,
   statusLines,
   stop,
@@ -48,12 +50,13 @@ Commands:
   stop        Stop the service until the next start or login
   restart     Restart the service, e.g. after changing the config
   status      Show the service, today's activity and recent errors
-  stream      What Ane highlighted as your instructions ask, and each day's cost at 1 am, live (--no-text, --lines N)
+  stream      What Ane highlighted as your instructions ask, and each day's cost at 1 am, live; clears the screen first (--no-text, --no-clear, --lines N)
   logs        Watch everything the agent does, live (--all, --no-text, --lines N, --verbose; --raw for the raw log)
   costs       Tokens and costs of today, this week, this month (--days N, --by day|chat|model|purpose, --json)
   mcp         Manage the MCP servers the agent may use (list, add, show, tools, scope, enable, disable, remove)
   skills      Manage the agent's skills (list, add, show, scope, enable, disable, remove)
   settings-mcp  The MCP server with the agent's own settings; Antigravity starts it (--dry-run)
+  cli-mcp     The MCP server that runs the programs [cli] allows; Antigravity starts it (--dry-run)
   print       Print the plist that "install" writes
   help        Show this help
   version     Show the version
@@ -102,6 +105,7 @@ async function main(argv: string[]): Promise<number> {
       text: { type: 'boolean', default: true },
       lines: { type: 'string' },
       raw: { type: 'boolean', default: false },
+      clear: { type: 'boolean', default: true },
       days: { type: 'string', default: '7' },
       by: { type: 'string', default: 'day' },
       json: { type: 'boolean', default: false },
@@ -145,6 +149,7 @@ async function main(argv: string[]): Promise<number> {
         text: values.text,
         lines: count(values.lines, 10),
         color: process.stdout.isTTY === true && process.env.NO_COLOR === undefined,
+        clear: values.clear && process.stdout.isTTY === true,
       });
       return 0;
     case 'logs':
@@ -176,6 +181,9 @@ async function main(argv: string[]): Promise<number> {
       }
       return 0;
     }
+    case 'cli-mcp':
+      await serveCli(await loadConfig(configFile), { dryRun: values['dry-run'], version });
+      return 0;
     case 'settings-mcp': {
       const config = await loadConfig(configFile);
       await serveSettings(config, {
@@ -330,6 +338,10 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
   if (!config.agent.settingsTools) report(true, 'settings', 'off: change [routing] in the config file');
   else if (config.engine.kind !== 'antigravity') note('settings', 'only engine.kind = "antigravity" lets the agent change its settings');
   else report(true, 'settings', 'on, for commands you type in the home chat');
+  for (const line of cliCheck(config, { path: process.env.PATH ?? '', servicePath: servicePath() })) {
+    if (line.status === 'note') note('cli', line.detail);
+    else report(line.status === 'ok', 'cli', line.detail);
+  }
 
   const { engine } = config;
   const label = engineLabel(engine.kind);

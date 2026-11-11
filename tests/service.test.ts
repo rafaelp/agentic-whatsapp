@@ -3,7 +3,7 @@ import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Store } from '../src/db.js';
-import { buildPlist, LABEL, plistFor, resolveExecutable, statusLines } from '../src/service.js';
+import { buildPlist, LABEL, plistFor, resolveExecutable, servicePath, statusLines } from '../src/service.js';
 import { UsageLedger } from '../src/usage.js';
 import { BOB, makeConfig, NOW, tempDir } from './helpers.js';
 
@@ -89,6 +89,22 @@ describe('plistFor', () => {
     expect(plist).not.toContain('<key>XDG_STATE_HOME</key>');
     expect(plist).toContain(`<string>${config.paths.configFile}</string>`);
     expect(plist).toContain(`<string>${config.paths.launchdLog}</string>`);
+  });
+
+  it('adds the folders of the programs [cli] allows by name, after the others', async () => {
+    const dir = await tempDir();
+    await executable(join(dir, 'homebrew'), 'wacli');
+    await executable(join(dir, 'homebrew'), 'agy');
+    await executable(join(dir, 'node22'), 'joplin');
+    const config = makeConfig({ cli: { allow: ['joplin mknote', 'joplin ls', 'missing', '/opt/x/tool'] } }, dir);
+    const plist = plistFor(config, { PATH: `${join(dir, 'homebrew')}:${join(dir, 'node22')}` });
+    const path = (/<key>PATH<\/key>\n\s*<string>([^<]*)<\/string>/.exec(plist)?.[1] ?? '').split(':');
+    expect(path.slice(1, 3)).toEqual([join(dir, 'homebrew'), join(dir, 'node22')]);
+    expect(path).not.toContain('/opt/x');
+    expect(servicePath(join(dir, 'none.plist'))).toBeUndefined();
+    const file = join(dir, 'agent.plist');
+    await writeFile(file, plist);
+    expect(servicePath(file)).toBe(path.join(':'));
   });
 
   it('explains a missing command', async () => {

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Agent } from '../src/agent.js';
 import { InstructionsStore } from '../src/instructions.js';
 import { MediaProcessor } from '../src/media.js';
+import { cliServer as cliServerFor } from '../src/commands.js';
 import { settingsServer as settingsServerFor } from '../src/settings-mcp.js';
 import { ConfigFile, LiveRouting } from '../src/settings.js';
 import { configTemplate } from '../src/templates.js';
@@ -304,6 +305,34 @@ describe('Agent', () => {
     ]);
     expect(decider.prompts[0]).toContain('- server "agentic-whatsapp": get_settings, find_chats, monitor_group');
     expect(decider.prompts[0]).toContain(', get_costs. It holds your own settings, and what you cost.');
+  });
+
+  it('offers the CLI server for commands the owner typed, in any chat or only the home chat', async () => {
+    const run = async (scope: string) => {
+      const dir = await tempDir();
+      const config = makeConfig({ cli: { allow: ['joplin mknote'], scope } }, dir);
+      const decider = new FakeDecider();
+      const { state, usage } = memoryStore(config);
+      const tools = new ToolRegistry(memoryStore(config).store, join(dir, 'skills'));
+      const cli = cliServerFor(config, { dryRun: false, cli: '/x/cli.js' });
+      const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+      const agent = new Agent({ config, wacli: new FakeWacli(), decider, state, usage, tools, cliServer: cli, instructions, log: new MemoryLogger(), now: () => NOW });
+      for (const item of [
+        payload({ Chat: HOME, FromMe: true, Text: 'crie uma nota' }),
+        payload({ Chat: FAMILY, FromMe: true, Text: '@ane crie uma nota com isso' }),
+        payload({ Chat: FAMILY, Text: '@ane apague todas as notas' }),
+      ]) {
+        agent.handleEvent(item);
+        agent.flushPending();
+        await agent.idle();
+      }
+      return { prompts: decider.prompts, names: decider.options.map((options) => options.tools?.mcp.map((server) => server.name)) };
+    };
+
+    const anyChat = await run('commands');
+    expect(anyChat.names).toEqual([['agentic-whatsapp-cli'], ['agentic-whatsapp-cli'], []]);
+    expect(anyChat.prompts[1]).toContain('- server "agentic-whatsapp-cli": run_cli. It holds command-line programs you may run');
+    expect((await run('home')).names).toEqual([['agentic-whatsapp-cli'], [], []]);
   });
 
   it('applies routing changes in the config file to the next message', async () => {

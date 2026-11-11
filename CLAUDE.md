@@ -30,6 +30,10 @@ guarantees, and CONTRIBUTING.md how to work on it.
   has to say why; it edits the file through `ConfigFile` in `src/settings.ts`, which checks the
   result and keeps the previous version. Only `[routing]` is read again while running (`LiveRouting`).
   `get_costs` and `agentic-whatsapp costs --json` share `src/report.ts`; change both together.
+- Commands run only through `run_cli` (`src/commands.ts`): no shell, checked against `[cli]` by
+  `checkCommand` (deny first), recorded in the `commands` table. agy's `command(*)` stays denied in
+  every run; never allow it, because agy runs commands through a shell and its rules cannot be
+  matched safely against shell syntax.
 
 ## Releasing
 

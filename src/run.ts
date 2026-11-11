@@ -12,6 +12,7 @@ import { MediaProcessor } from './media.js';
 import { createNotifier } from './notify.js';
 import { systemPrompt } from './prompt.js';
 import { startReceiver } from './receiver.js';
+import { cliServer } from './commands.js';
 import { settingsServer } from './settings-mcp.js';
 import { LiveRouting } from './settings.js';
 import { AgentState } from './state.js';
@@ -76,6 +77,9 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   if (tools === undefined && hasEnabledTools(registry)) {
     log.warn('skills and MCP servers only work with engine.kind = "antigravity"; they are not used');
   }
+  if (tools === undefined && config.cli.allow.length > 0) {
+    log.warn('[cli] only works with engine.kind = "antigravity"; no command can be run');
+  }
   const prune = async () => {
     if (config.storage.retentionDays === 0) return;
     const before = new Date(Date.now() - config.storage.retentionDays * 86_400_000);
@@ -123,6 +127,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     tools,
     media,
     settingsServer: tools !== undefined && config.agent.settingsTools ? settingsServer(config, { dryRun: options.dryRun }) : undefined,
+    cliServer: tools !== undefined && config.cli.allow.length > 0 ? cliServer(config, { dryRun: options.dryRun }) : undefined,
     routing: new LiveRouting({ configFile: paths.configFile, stateDir: paths.stateDir, logDir: paths.logDir }, config.routing, log),
     instructions,
     log,
@@ -185,6 +190,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     directMessages: config.routing.directMessages,
     allowlistedGroups: config.routing.groupAllowlist.length,
     settingsTools: tools !== undefined && config.agent.settingsTools,
+    cliRules: tools === undefined ? undefined : config.cli.allow.length || undefined,
     skills: tools?.skills().filter((skill) => skill.enabled).length,
     mcpServers: tools?.servers().filter((server) => server.enabled).length,
     media: media === undefined ? undefined : [config.media.images && 'images', config.media.audio && 'audio'].filter(Boolean),

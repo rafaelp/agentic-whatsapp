@@ -444,6 +444,18 @@ appendFileSync(join(dir, 'settings.jsonl'), JSON.stringify(JSON.parse(readFileSy
       expect(JSON.parse(await readFile(agy.toolSettingsFile, 'utf8')).permissions.allow).toEqual(['mcp(notes/*)']);
     });
 
+    it('signs in to a server in the same workspace, and writes the full config again for the next run', async () => {
+      const command = await fakeAgy([[result({ actions: [] })], [result({ actions: [] })]]);
+      const { agy, decision } = await decideWith(command, await toolSet());
+      await decision;
+      const gmail = server({ name: 'gmail', transport: 'http', url: 'https://example.com/mcp', oauth: { clientId: 'id', clientSecret: 's' } });
+      expect(await agy.prepareLogin(gmail)).toBe(agy.toolsWorkspace);
+      expect(Object.keys(JSON.parse(await readFile(agy.mcpConfigFile, 'utf8')).mcpServers)).toEqual(['gmail']);
+
+      await agy.decide('again', { tools: await toolSet() });
+      expect(Object.keys(JSON.parse(await readFile(agy.mcpConfigFile, 'utf8')).mcpServers)).toEqual(['notes']);
+    });
+
     it('clears the MCP config of an earlier run when it starts', async () => {
       const command = await fakeAgy([[result({ actions: [] })]]);
       const { agy, decision } = await decideWith(command, await toolSet());
@@ -490,7 +502,11 @@ describe('media runs', () => {
 describe('agy files for tools', () => {
   it('writes http servers with their headers, and denies MCP when only skills are on', () => {
     expect(mcpConfig([server({ name: 'api', transport: 'http', url: 'https://example.com/mcp', headers: { A: 'b' } })])).toEqual({
-      mcpServers: { api: { url: 'https://example.com/mcp', headers: { A: 'b' } } },
+      mcpServers: { api: { serverUrl: 'https://example.com/mcp', headers: { A: 'b' } } },
+    });
+    const gmail = server({ name: 'gmail', transport: 'http', url: 'https://gmailmcp.googleapis.com/mcp/v1', oauth: { clientId: 'id', clientSecret: 's' } });
+    expect(mcpConfig([gmail])).toEqual({
+      mcpServers: { gmail: { serverUrl: 'https://gmailmcp.googleapis.com/mcp/v1', oauth: { clientId: 'id', clientSecret: 's' } } },
     });
     expect(mcpGrants([server({ tools: ['a', 'b'] })])).toEqual(['mcp(notes/a)', 'mcp(notes/b)']);
     expect(toolSessionSettings({ mcp: [], skills: [] }, '/ws/.agents/mcp_config.json').permissions.deny).toContain('mcp(*)');

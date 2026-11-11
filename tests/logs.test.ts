@@ -95,6 +95,22 @@ describe('LogRenderer', () => {
     ).toBe(`12:00:00  ⚙ settings changed: monitoring Família; stopped monitoring 120363000000000003; direct messages off; may reply without being asked in ${BOB.split('@')[0]}`);
   });
 
+  it('shows the commands the agent ran or was refused, without their arguments', async () => {
+    const r = renderer();
+    expect(await r.render(entry('command', { program: 'joplin', rule: 'joplin mknote', exitCode: 0, seconds: 1.2 }))).toBe(
+      '12:00:00  ⌨ ran joplin mknote (exit 0, 1.2s)',
+    );
+    expect(await r.render(entry('command', { program: 'joplin', rule: 'joplin set', exitCode: null, timedOut: true }))).toBe(
+      '12:00:00  ⌨ ran joplin set (timed out)',
+    );
+    expect(await r.render(entry('command refused', { program: 'joplin', reason: '[cli] deny has "joplin rmnote"' }, 'warn'))).toBe(
+      '12:00:00  ⛔ refused to run joplin: [cli] deny has "joplin rmnote"',
+    );
+    expect(await r.render(entry('dry run: would run a command', { program: 'joplin', rule: 'joplin mknote' }))).toBe(
+      '12:00:00  📝 would run joplin mknote',
+    );
+  });
+
   it('shows the cost of the day before', async () => {
     const r = renderer();
     expect(r.wants(entry('daily cost', { day: '2026-11-09', calls: 37, cost: 0.4213 }))).toBe(true);

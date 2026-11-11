@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, dirname, extname, join, resolve } from 'node:path';
 import type { Config } from './config.js';
@@ -29,6 +29,15 @@ const target = (): string => `${domain()}/${LABEL}`;
 
 const escapeXml = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** The PATH of the installed service, from its plist; undefined when it is not installed. */
+export function servicePath(file: string = plistPath()): string | undefined {
+  try {
+    return /<key>PATH<\/key>\s*<string>([^<]*)<\/string>/.exec(readFileSync(file, 'utf8'))?.[1];
+  } catch {
+    return undefined;
+  }
+}
 
 /** Finds an executable like a shell does: a path as given, or the first match on PATH. */
 export function resolveExecutable(command: string, pathEnv: string = process.env.PATH ?? ''): string | null {
@@ -113,7 +122,13 @@ export function plistFor(config: Config, env: NodeJS.ProcessEnv = process.env): 
   };
   const wacli = find(config.wacli.command, 'wacli.command');
   const engine = find(config.engine.command, 'engine.command');
-  const dirs = [dirname(process.execPath), dirname(wacli), dirname(engine), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  // The programs [cli] allows by name, found on the PATH of whoever installs the service. They
+  // come after Node, wacli and the engine, so those keep their own versions.
+  const programs = config.cli.allow
+    .filter((rule) => !rule.program.includes('/'))
+    .flatMap((rule) => resolveExecutable(rule.program, env.PATH) ?? [])
+    .map((file) => dirname(file));
+  const dirs = [dirname(process.execPath), dirname(wacli), dirname(engine), ...programs, '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   const copied: Record<string, string> = {};
   for (const key of ENV_KEYS) {
     const value = env[key];
@@ -151,6 +166,16 @@ function isLoaded(): boolean {
   return launchctl(['print', target()], true).ok;
 }
 
+/**
+ * Unloads the service and waits until launchd lets it go: bootout returns while the agent is
+ * still draining, and a bootstrap before that fails with "5: Input/output error".
+ */
+async function bootout(timeoutMs = 20_000): Promise<void> {
+  launchctl(['bootout', target()], true);
+  const deadline = Date.now() + timeoutMs;
+  while (isLoaded() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 250));
+}
+
 export async function install(config: Config): Promise<string[]> {
   requireMacOS();
   const plist = plistFor(config);
@@ -163,7 +188,7 @@ export async function install(config: Config): Promise<string[]> {
   writeFileSync(file, plist);
   const lint = spawnSync('plutil', ['-lint', file], { encoding: 'utf8' });
   if (lint.status !== 0) throw new Error(`The generated plist is invalid: ${lint.stdout}${lint.stderr}`);
-  launchctl(['bootout', target()], true);
+  await bootout();
   launchctl(['bootstrap', domain(), file]);
   return [
     `installed ${file}`,

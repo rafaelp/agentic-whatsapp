@@ -39,6 +39,8 @@ const KNOWN = new Set([
   'highlight',
   'daily cost',
   'settings changed',
+  'command',
+  'dry run: would run a command',
 ]);
 
 /** Turns agent log entries into one readable line each, for `agentic-whatsapp logs`. */
@@ -139,6 +141,21 @@ export class LogRenderer {
         color = paint.magenta;
         break;
       }
+      case 'command': {
+        const failed = f.timedOut === true || f.exitCode !== 0;
+        const end = f.timedOut === true ? 'timed out' : `exit ${String(f.exitCode ?? '?')}`;
+        body = `⌨ ran ${asString(f.rule) || asString(f.program)} (${end}${typeof f.seconds === 'number' ? `, ${f.seconds}s` : ''})`;
+        color = failed ? paint.yellow : paint.blue;
+        break;
+      }
+      case 'dry run: would run a command':
+        body = `📝 would run ${asString(f.rule) || asString(f.program)}`;
+        color = paint.yellow;
+        break;
+      case 'command refused':
+        body = `⛔ refused to run ${asString(f.program) || 'a command'}: ${asString(f.reason)}`;
+        color = paint.yellow;
+        break;
       case 'settings changed': {
         const chats = (key: string) => (Array.isArray(f[key]) ? f[key].map((jid) => this.chatLabel(asString(jid))).join(', ') : '');
         const parts = [

@@ -37,11 +37,21 @@ Every version published to npm has a matching `v` tag and GitHub release with th
   with why they matter, and the stream shows each message's text, transcript or description.
 - Every day at 1 am, `agentic-whatsapp stream` shows the cost of the day before: its model calls,
   tokens and cost.
+- `agentic-whatsapp stream` clears the terminal when it starts; `--no-clear` keeps what was there.
 - Ane can change its own settings when you ask in the home chat, such as "monitor the Family group":
   built-in MCP tools find chats by name in the wacli archive and change `routing.group_allowlist`,
   `direct_messages` and `auto_reply_chats` in the config file, keeping its comments and the previous
   version in `config-history/`. They are offered only for commands you typed in the home chat, need
   Antigravity, and `agent.settings_tools = false` turns them off.
+- `[cli]`: any command-line programs Ane may run for your commands, such as `gh issue create` or
+  `joplin mknote` to take a note from any chat with "@ane make a note of this". `allow` and `deny` rules name a program and
+  the words a command must start with, and deny wins. The model runs them through a `run_cli` MCP
+  tool, without a shell; agy's own command tool stays denied. Every command is recorded in the
+  database with its rule and exit code, and `logs` shows it. `scope = "home"` keeps it to the home
+  chat, `install` adds the programs' folders to the service PATH, and `check` lists them.
+- MCP servers that sign in with OAuth, such as Google's Gmail server: `mcp add --oauth-client-id
+  --oauth-client-secret`, and `agentic-whatsapp mcp login <name>` to sign in once, in agy, from the
+  agent's own workspace. The README explains how to set up Gmail.
 - Ane can answer what it costs: its `get_costs` tool gives every figure of `agentic-whatsapp costs` in
   one call, with today, this week, this month and all time, the limits, and the last days by day,
   chat, model and purpose. `costs --json` and the tool share the same code.
@@ -51,6 +61,8 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - The live view of the agent that was `agentic-whatsapp stream` is now `agentic-whatsapp logs`, with
   the same options; following the raw log is `logs --raw`.
 - Changes to `[routing]` in the config file apply from the next message, without a restart.
+- http MCP servers are written with `serverUrl`, as `agy mcp add` writes them; agy 1.5.5 reads the
+  older `url` too.
 - The state moved from `state.json` to the database. The first start imports it and renames it to
   `state.json.imported`.
 - `engine.max_calls_per_day` counts every run of the engine, including the second attempt after a
@@ -58,6 +70,11 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - Node.js 22.13 or later is required, for its built-in SQLite.
 - An answer whose whole decision is written inside a single action, which the model sometimes does
   after using tools, is unwrapped instead of dropped.
+
+### Fixed
+
+- `install` over a running service could leave it stopped, with "launchctl bootstrap failed: 5:
+  Input/output error": it now waits for the old agent to stop before starting the new one.
 
 ## [0.3.1] - 2026-11-10
 

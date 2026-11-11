@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Store } from '../src/db.js';
 import { AgentState, type Highlight, type StoredText } from '../src/state.js';
-import { HighlightRenderer, stream } from '../src/stream.js';
+import { CLEAR_SCREEN, HighlightRenderer, stream } from '../src/stream.js';
 import { BOB, FAMILY, HOME, makeConfig, message, NOW, tempDir } from './helpers.js';
 
 const config = makeConfig();
@@ -95,7 +95,7 @@ describe('stream', () => {
     const controller = new AbortController();
     const running = stream(
       local,
-      { lines: 1, text: true, color: false },
+      { lines: 1, text: true, color: false, clear: false },
       { write: (line) => lines.push(line), signal: controller.signal, pollMs: 10, lookup: archive, now: () => NOW },
     );
     await waitFor(() => lines.some((line) => line.includes('convite de novo')));
@@ -111,12 +111,29 @@ describe('stream', () => {
     writer.store.close();
   });
 
+  it('clears the screen before its first line, unless asked not to', async () => {
+    const dir = await tempDir();
+    const local = makeConfig({}, dir);
+    Store.open(local.paths.database).close();
+    const firstLine = async (clear: boolean) => {
+      const lines: string[] = [];
+      const controller = new AbortController();
+      const running = stream(local, { lines: 0, text: true, color: false, clear }, { write: (line) => lines.push(line), signal: controller.signal, pollMs: 10 });
+      await waitFor(() => lines.length > 0);
+      controller.abort();
+      await running;
+      return lines[0];
+    };
+    expect(await firstLine(true)).toBe(`${CLEAR_SCREEN}Highlights from Ane · Ctrl+C to stop`);
+    expect(await firstLine(false)).toBe('Highlights from Ane · Ctrl+C to stop');
+  });
+
   it('waits for the database, and explains how to get highlights when there are none', async () => {
     const dir = await tempDir();
     const local = makeConfig({}, join(dir, 'state'));
     const lines: string[] = [];
     const controller = new AbortController();
-    const running = stream(local, { lines: 10, text: true, color: false }, { write: (line) => lines.push(line), signal: controller.signal, pollMs: 10 });
+    const running = stream(local, { lines: 10, text: true, color: false, clear: false }, { write: (line) => lines.push(line), signal: controller.signal, pollMs: 10 });
     await waitFor(() => lines.some((line) => line.startsWith('Waiting for')));
     Store.open(local.paths.database).close();
     await waitFor(() => lines.some((line) => line.startsWith('Nothing highlighted yet')));

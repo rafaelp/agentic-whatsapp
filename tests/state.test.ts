@@ -14,12 +14,12 @@ describe('Store', () => {
     const dir = await tempDir();
     const file = join(dir, 'state', 'agentic-whatsapp.db');
     const store = Store.open(file);
-    expect(store.version).toBe(4);
+    expect(store.version).toBe(6);
     store.setMeta('k', 'v');
     store.close();
 
     const again = Store.open(file);
-    expect(again.version).toBe(4);
+    expect(again.version).toBe(6);
     expect(again.meta('k')).toBe('v');
     again.close();
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -200,6 +200,24 @@ describe('AgentState', () => {
     expect(state.lastHighlightId()).toBe(id);
     expect(state.recentHighlights(5).map((entry) => entry.kind)).toEqual(['messages', 'daily_cost']);
     expect(state.highlightsAfter(id - 1)).toEqual([{ id, at: NOW, chat: '', chatName: '', ids: [], text: '', kind: 'daily_cost', dailyCost: daily }]);
+  });
+
+  it('keeps the commands run_cli ran, with their arguments only while texts are kept', () => {
+    const store = Store.open(null);
+    const state = new AgentState(store);
+    const old = new Date('2026-01-01T00:00:00Z');
+    state.recordCommand({ program: 'joplin', rule: 'joplin mknote', command: ['joplin', 'mknote', 'Compras'], status: 'ok', exitCode: 0, durationMs: 812.4 }, old);
+    state.recordCommand({ program: 'joplin', rule: '', command: ['joplin', 'rmnote', 'a1'], status: 'refused', durationMs: 0, error: 'denied' }, NOW);
+    expect(store.all('SELECT program, rule, args, status, exit_code, duration_ms, error FROM commands ORDER BY id')).toEqual([
+      { program: 'joplin', rule: 'joplin mknote', args: '["joplin","mknote","Compras"]', status: 'ok', exit_code: 0, duration_ms: 812, error: null },
+      { program: 'joplin', rule: '', args: '["joplin","rmnote","a1"]', status: 'refused', exit_code: null, duration_ms: 0, error: 'denied' },
+    ]);
+    state.pruneText(new Date('2026-06-01T00:00:00Z'));
+    expect(store.all('SELECT args FROM commands ORDER BY id').map((row) => row.args)).toEqual([null, '["joplin","rmnote","a1"]']);
+
+    const quiet = Store.open(null);
+    new AgentState(quiet, { saveText: false }).recordCommand({ program: 'joplin', rule: 'joplin ls', command: ['joplin', 'ls'], status: 'ok', durationMs: 1 });
+    expect(quiet.get('SELECT args FROM commands')?.args).toBeNull();
   });
 
   it('keeps the reason of a highlight only while texts are kept', () => {

@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parse } from 'smol-toml';
+import { type CommandRule, parseCommandRule } from './command-rules.js';
 import { isValidTimeZone, systemTimeZone } from './time.js';
 import { errorMessage, isNotFound, isRecord } from './util.js';
 
@@ -86,6 +87,15 @@ export interface MediaConfig {
   maxBytes: number;
 }
 
+/** Command-line programs the agent may run for the owner, through its run_cli tool. */
+export interface CliConfig {
+  allow: CommandRule[];
+  deny: CommandRule[];
+  /** "commands": a command the owner typed, in any chat. "home": only in the home chat. */
+  scope: 'commands' | 'home';
+  timeoutSeconds: number;
+}
+
 export interface Paths {
   configFile: string;
   instructionsFile: string;
@@ -113,6 +123,7 @@ export interface Config {
   costs: CostsConfig;
   storage: StorageConfig;
   media: MediaConfig;
+  cli: CliConfig;
   paths: Paths;
 }
 
@@ -290,6 +301,25 @@ export function parseConfig(
     maxBytes: mediaSection.integer('max_size_mb', 20, 1, 100) * 1024 * 1024,
   };
   mediaSection.finish();
+
+  const cliSection = root.section('cli');
+  const rules = (key: string): CommandRule[] =>
+    cliSection.strings(key, []).map((text) => {
+      const rule = parseCommandRule(text);
+      if (typeof rule === 'string') throw new ConfigError(`cli.${key}: ${rule}`);
+      return rule;
+    });
+  const scope = cliSection.string('scope', 'commands').trim();
+  if (scope !== 'commands' && scope !== 'home') {
+    throw new ConfigError(`cli.scope must be "commands" or "home", got ${JSON.stringify(scope)}`);
+  }
+  const cli: CliConfig = {
+    allow: rules('allow'),
+    deny: rules('deny'),
+    scope,
+    timeoutSeconds: cliSection.integer('timeout_seconds', 60, 1, 600),
+  };
+  cliSection.finish();
   root.finish();
 
   const logDir = location.logDir ?? join(location.stateDir, 'logs');
@@ -302,6 +332,7 @@ export function parseConfig(
     costs,
     storage,
     media,
+    cli,
     paths: {
       configFile: location.configFile,
       instructionsFile: join(dirname(location.configFile), 'instructions.md'),

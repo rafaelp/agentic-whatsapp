@@ -26,6 +26,13 @@ export interface McpServer {
   updatedAt: string;
   /** What the server is for, shown to the model; only the built-in settings server has one. */
   description?: string;
+  /** The OAuth client of an http server that signs in with OAuth; agy keeps the tokens. */
+  oauth?: OAuthClient;
+}
+
+export interface OAuthClient {
+  clientId: string;
+  clientSecret: string;
 }
 
 export interface Skill {
@@ -53,6 +60,8 @@ export function hasTools(tools: ToolSet | undefined): tools is ToolSet {
 
 /** The built-in server with the agent's own settings, a name the owner's servers cannot take. */
 export const SETTINGS_SERVER = 'agentic-whatsapp';
+/** The built-in server that runs the programs [cli] allows. */
+export const CLI_SERVER = 'agentic-whatsapp-cli';
 
 /** Server and skill names end up in agy permission rules and folder names. */
 export const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
@@ -114,6 +123,7 @@ export interface McpInput {
   tools?: string[];
   scope?: ToolScope;
   enabled?: boolean;
+  oauth?: OAuthClient;
 }
 
 /**
@@ -150,21 +160,25 @@ export class ToolRegistry {
   /** Adds a server, or replaces the one with the same name. */
   saveServer(input: McpInput): McpServer {
     requireName(input.name, 'MCP server');
-    if (input.name === SETTINGS_SERVER) {
-      throw new ToolError(`"${SETTINGS_SERVER}" is the name of the agent's own settings tools; pick another name`);
+    if (input.name === SETTINGS_SERVER || input.name === CLI_SERVER) {
+      throw new ToolError(`"${input.name}" is the name of one of the agent's own tool servers; pick another name`);
     }
     if (input.transport === 'http') {
       if (!/^https?:\/\//.test(input.url ?? '')) throw new ToolError('An http server needs an http:// or https:// URL');
     } else if ((input.command ?? '') === '') {
       throw new ToolError('A stdio server needs a command');
     }
+    if (input.oauth !== undefined) {
+      if (input.transport !== 'http') throw new ToolError('OAuth is only for http servers');
+      if (input.oauth.clientId === '' || input.oauth.clientSecret === '') throw new ToolError('OAuth needs both a client ID and a client secret');
+    }
     const at = this.now().toISOString();
     this.store.run(
-      `INSERT INTO mcp_servers (name, transport, command, args, url, env, headers, tools, scope, enabled, added_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO mcp_servers (name, transport, command, args, url, env, headers, tools, scope, enabled, added_at, updated_at, oauth)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (name) DO UPDATE SET transport = excluded.transport, command = excluded.command, args = excluded.args,
          url = excluded.url, env = excluded.env, headers = excluded.headers, tools = excluded.tools, scope = excluded.scope,
-         enabled = excluded.enabled, updated_at = excluded.updated_at`,
+         enabled = excluded.enabled, updated_at = excluded.updated_at, oauth = excluded.oauth`,
       input.name,
       input.transport,
       input.transport === 'stdio' ? input.command : '',
@@ -177,6 +191,7 @@ export class ToolRegistry {
       input.enabled ?? true,
       at,
       at,
+      input.oauth === undefined ? undefined : JSON.stringify(input.oauth),
     );
     return this.server(input.name);
   }
@@ -286,6 +301,7 @@ export function frontmatter(content: string): Record<string, string> {
 }
 
 function serverFrom(row: Row): McpServer {
+  const oauth = json<Partial<OAuthClient> | null>(row.oauth, null);
   return {
     name: text(row.name),
     transport: text(row.transport) === 'http' ? 'http' : 'stdio',
@@ -299,6 +315,9 @@ function serverFrom(row: Row): McpServer {
     enabled: row.enabled === 1,
     addedAt: text(row.added_at),
     updatedAt: text(row.updated_at),
+    ...(typeof oauth?.clientId === 'string' && typeof oauth.clientSecret === 'string'
+      ? { oauth: { clientId: oauth.clientId, clientSecret: oauth.clientSecret } }
+      : {}),
   };
 }
 
