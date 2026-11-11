@@ -3,7 +3,8 @@ import type { Config } from './config.js';
 import { Store } from './db.js';
 import { oneLine, type Painter, painter, sleep, type TextLookup } from './logs.js';
 import { AgentState, type DailyCost, type Highlight, type StoredText } from './state.js';
-import { dayKey, formatClock, formatLocalTime } from './time.js';
+import { type Task, TaskStore } from './tasks.js';
+import { dayKey, formatClock, formatLocalTime, weekday } from './time.js';
 import { formatMoney, formatTokens } from './usage.js';
 import { Wacli } from './wacli.js';
 import { chatKind } from './whatsapp.js';
@@ -43,7 +44,8 @@ export class HighlightRenderer {
     this.paint = painter(options.color);
   }
 
-  async render(highlight: Highlight, messages: readonly StoredText[]): Promise<string[]> {
+  /** `task` is the scheduled task of a task entry, as the database has it now. */
+  async render(highlight: Highlight, messages: readonly StoredText[], task?: Task): Promise<string[]> {
     const { paint } = this;
     const zone = this.config.agent.timezone;
     const time =
@@ -51,6 +53,7 @@ export class HighlightRenderer {
     if (highlight.kind === 'daily_cost') return [`${paint.dim(time)}  ${this.costLine(highlight.dailyCost)}`];
     if (highlight.kind === 'deleted') return this.deleted(time, highlight, messages[0]);
     if (highlight.kind === 'transcript') return this.transcript(time, highlight, messages[0]);
+    if (highlight.kind === 'task') return this.task(time, highlight, task);
     const lines = [`${paint.dim(time)}  ${paint.bold(paint.magenta(`★ ${this.chatLabel(highlight, messages)}`))}`];
     for (const message of messages) {
       const who = message.fromMe ? 'you' : message.senderName || message.sender.split('@')[0] || 'someone';
@@ -100,6 +103,40 @@ export class HighlightRenderer {
   }
 
   /**
+   * "⏰ Task 3 for Thu 2026-11-12 09:00 · Carol" when it is scheduled, "✅ Task 3 done · Carol"
+   * when it ran, then what it says and what it did.
+   */
+  private task(time: string, highlight: Highlight, task: Task | undefined): string[] {
+    const { paint } = this;
+    const zone = this.config.agent.timezone;
+    const id = highlight.task?.id ?? task?.id ?? 0;
+    const where = highlight.chat === '' ? '' : ` · ${this.chatLabel(highlight, [])}`;
+    const due = task === undefined ? '' : ` for ${weekday(task.dueAt, zone)} ${formatLocalTime(task.dueAt, zone)}`;
+    const reason = task === undefined || task.error === '' ? '' : `: ${task.error}`;
+    const header = (() => {
+      switch (highlight.task?.event) {
+        case 'done':
+          return paint.bold(paint.green(`✅ Task ${id} done${where}`));
+        case 'failed':
+          return paint.bold(paint.red(`⚠ Task ${id} failed${where}${reason}`));
+        case 'missed':
+          return paint.bold(paint.red(`⚠ Task ${id} not run${where}${reason}`));
+        case 'cancelled':
+          return paint.bold(paint.dim(`✖ Task ${id} cancelled${where}`));
+        default:
+          return paint.bold(paint.blue(`⏰ Task ${id}${due}${where}`));
+      }
+    })();
+    const lines = [`${paint.dim(time)}  ${header}`];
+    if (!this.options.text || task === undefined) return lines;
+    if (task.task !== '') lines.push(`${INDENT}${oneLine(task.task)}`);
+    if (highlight.task?.event === 'done') {
+      for (const line of task.result.split('\n').filter((item) => item !== '')) lines.push(`${INDENT}${paint.yellow(oneLine(line))}`);
+    }
+    return lines;
+  }
+
+  /**
    * "🗑 Família · Carol deleted a message", then what it said. wacli clears a deleted message
    * from its archive, so only the database has it.
    */
@@ -119,7 +156,7 @@ export class HighlightRenderer {
 
 /**
  * `agentic-whatsapp stream`: only the messages Ane highlighted, following the owner's
- * instructions, and the cost of each day the next morning, until Ctrl+C. Entries come from
+ * instructions, the tasks it was given for later, and the cost of each day the next morning, until Ctrl+C. Entries come from
  * the database, so they survive restarts and keep message text out of the log.
  */
 export async function stream(
@@ -144,9 +181,11 @@ export async function stream(
 
   const store = Store.open(config.paths.database);
   const state = new AgentState(store);
+  const tasks = new TaskStore(state);
   const show = async (highlight: Highlight) => {
-    const messages = highlight.kind === 'daily_cost' ? [] : state.messagesById(highlight.chat, highlight.ids);
-    for (const line of await renderer.render(highlight, messages)) write(line);
+    const messages = highlight.kind === 'daily_cost' || highlight.kind === 'task' ? [] : state.messagesById(highlight.chat, highlight.ids);
+    const task = highlight.task === undefined ? undefined : tasks.get(highlight.task.id);
+    for (const line of await renderer.render(highlight, messages, task)) write(line);
   };
   try {
     let last = state.lastHighlightId();

@@ -58,6 +58,11 @@ Every version published to npm has a matching `v` tag and GitHub release with th
   the home chat adds one, with the `monitor_chat` tool, which follows groups too.
 - `agent.stream_deleted` (on by default): when someone deletes a message for everyone, the stream
   shows what it said, in any chat and without calling the model.
+- Scheduled tasks: "tomorrow at 9 tell Carol she needs to buy juice" in the home chat schedules a
+  task with new settings tools (`schedule_task`, `list_tasks`, `cancel_task`). When it is due, the
+  model gets it as your command in the chat it is about, so the reply goes there, and it can do
+  anything a home-chat command can. Tasks live in the database; the stream and `logs` show each one
+  when it is scheduled, done, failed or cancelled, and you are told when one cannot run.
 - Media hooks (`[[hooks]]`): when a file of the chosen media and MIME types arrives in the chosen
   chats (`home`, `direct`, `group`), Ane follows a skill of yours on it, with read access to that
   file, `run_cli` and your MCP tools, and tells you what it did. A file without a caption goes to its

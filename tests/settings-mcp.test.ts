@@ -12,9 +12,11 @@ import {
   ToolCallError,
 } from '../src/settings-mcp.js';
 import { ConfigFile } from '../src/settings.js';
+import { AgentState } from '../src/state.js';
+import { TaskStore } from '../src/tasks.js';
 import { configTemplate } from '../src/templates.js';
 import type { ChatInfo } from '../src/wacli.js';
-import { BOB, FAMILY, HOME, makeConfig, OTHER_GROUP, tempDir } from './helpers.js';
+import { BOB, FAMILY, HOME, makeConfig, MemoryLogger, memoryStore, NOW, OTHER_GROUP, tempDir } from './helpers.js';
 
 const echo: ToolDefinition = {
   name: 'echo',
@@ -112,15 +114,31 @@ async function setup(options: { dryRun?: boolean } = {}) {
     costDays.push(days);
     return { currency: 'USD', periods: { day: { key: '2026-11-10', calls: 3, cost: 0.054292500000000004 } } };
   };
+  const { store } = memoryStore();
+  const tasks = new TaskStore(new AgentState(store));
+  const log = new MemoryLogger();
+  let now = NOW;
   const tools = new Map(
-    settingsTools({ config, chats: new FakeChats(CHATS), costs, dryRun: options.dryRun ?? false }).map((tool) => [tool.name, tool]),
+    settingsTools({
+      config,
+      chats: new FakeChats(CHATS),
+      costs,
+      tasks,
+      timezone: 'America/Sao_Paulo',
+      log,
+      dryRun: options.dryRun ?? false,
+      now: () => now,
+    }).map((tool) => [tool.name, tool]),
   );
   const call = (name: string, args: Record<string, unknown> = {}) => {
     const tool = tools.get(name);
     if (tool === undefined) throw new Error(`no tool ${name}`);
     return tool.call(args);
   };
-  return { file, template, config, call, costDays, names: [...tools.keys()] };
+  const setNow = (date: Date) => {
+    now = date;
+  };
+  return { file, template, config, call, costDays, tasks, log, setNow, names: [...tools.keys()] };
 }
 
 describe('settingsTools', () => {
@@ -205,11 +223,84 @@ describe('settingsTools', () => {
     await expect(call('get_costs', { days: 2.5 })).rejects.toThrow(ToolCallError);
   });
 
+  it('schedules a task at a local time, about a chat it knows, and logs it', async () => {
+    const { call, tasks, log } = await setup();
+    // NOW is Tuesday 2026-11-10 12:00 in São Paulo.
+    expect(await call('schedule_task', { at: '2026-11-11 09:00', task: 'Dizer ao Bob que precisa comprar suco', chat_id: BOB })).toBe(
+      `Scheduled task 1 for Wed 2026-11-11 09:00 (America/Sao_Paulo), about "Bob" (${BOB}).`,
+    );
+    expect(await call('schedule_task', { at: '2026-11-10 12:00', task: 'Lembrar do boleto' })).toBe(
+      'Scheduled task 2 for Tue 2026-11-10 12:00 (America/Sao_Paulo).',
+    );
+    expect(tasks.pending()).toEqual([
+      expect.objectContaining({ id: 2, dueAt: new Date('2026-11-10T15:00:00Z'), chat: '', task: 'Lembrar do boleto' }),
+      expect.objectContaining({ id: 1, dueAt: new Date('2026-11-11T12:00:00Z'), chat: BOB, chatName: 'Bob' }),
+    ]);
+    expect(log.entries.filter((entry) => entry.message === 'task scheduled').map((entry) => entry.fields)).toEqual([
+      { task: 1, due: '2026-11-11 09:00', chat: BOB, chatName: 'Bob' },
+      { task: 2, due: '2026-11-10 12:00', chat: undefined, chatName: undefined },
+    ]);
+  });
+
+  it('refuses times it cannot read, in the past or too far ahead, and chats it does not know', async () => {
+    const { call, tasks } = await setup();
+    await expect(call('schedule_task', { at: 'amanhã 9h', task: 'x' })).rejects.toThrow(
+      '"at" must be a local time as YYYY-MM-DD HH:MM, such as 2026-11-10 12:00.',
+    );
+    await expect(call('schedule_task', { at: '2026-11-10 11:59', task: 'x' })).rejects.toThrow(
+      '2026-11-10 11:59 is in the past: it is now Tue 2026-11-10 12:00 (America/Sao_Paulo).',
+    );
+    await expect(call('schedule_task', { at: '2028-01-01 09:00', task: 'x' })).rejects.toThrow('at most 366 days ahead');
+    await expect(call('schedule_task', { at: '2026-11-11 09:00', task: ' ' })).rejects.toThrow('Say what to do in "task".');
+    await expect(call('schedule_task', { at: '2026-11-11 09:00', task: 'x'.repeat(2_001) })).rejects.toThrow('at most 2000 characters');
+    await expect(call('schedule_task', { at: '2026-11-11 09:00', task: 'x', chat_id: 'Bob' })).rejects.toThrow('"Bob" is not a chat id');
+    await expect(call('schedule_task', { at: '2026-11-11 09:00', task: 'x', chat_id: '5521999999999@s.whatsapp.net' })).rejects.toThrow(
+      'No chat with id',
+    );
+    expect(tasks.pending()).toEqual([]);
+  });
+
+  it('lists the tasks waiting and the last ones that finished, and cancels one', async () => {
+    const { call, tasks, log, setNow } = await setup();
+    await call('schedule_task', { at: '2026-11-11 09:00', task: 'Dizer ao Bob que precisa comprar suco', chat_id: BOB });
+    await call('schedule_task', { at: '2026-11-12 18:30', task: 'Lembrar da reunião' });
+    await call('schedule_task', { at: '2026-11-10 12:00', task: 'Lembrar do boleto' });
+    tasks.start(3, NOW);
+    tasks.finish(3, { status: 'done', result: '→ you: Lembrete: boleto' }, NOW);
+
+    expect(JSON.parse(await call('list_tasks'))).toEqual({
+      pending: [
+        { id: 1, at: 'Wed 2026-11-11 09:00', chat_id: BOB, chat: 'Bob', task: 'Dizer ao Bob que precisa comprar suco' },
+        { id: 2, at: 'Thu 2026-11-12 18:30', task: 'Lembrar da reunião' },
+      ],
+      recent: [{ id: 3, at: 'Tue 2026-11-10 12:00', task: 'Lembrar do boleto', status: 'done', result: '→ you: Lembrete: boleto' }],
+    });
+
+    setNow(new Date('2026-11-10T16:00:00Z'));
+    expect(await call('cancel_task', { task_id: 2 })).toBe('Done: task 2, for Thu 2026-11-12 18:30, is cancelled.');
+    expect(await call('cancel_task', { task_id: 2 })).toBe('Task 2 cannot be cancelled: it is cancelled.');
+    expect(await call('cancel_task', { task_id: 3 })).toBe('Task 3 cannot be cancelled: it is done.');
+    await expect(call('cancel_task', { task_id: 9 })).rejects.toThrow('There is no task 9.');
+    await expect(call('cancel_task', { task_id: '1' })).rejects.toThrow('"task_id" must be the id of a task');
+    expect(tasks.pending().map((task) => task.id)).toEqual([1]);
+    expect(log.entries.find((entry) => entry.message === 'task cancelled')?.fields).toEqual({ task: 2, chat: undefined, chatName: undefined });
+  });
+
+  it('refuses a new task when too many are waiting', async () => {
+    const { call, tasks } = await setup();
+    for (let index = 0; index < 100; index++) tasks.schedule({ dueAt: new Date('2026-11-11T12:00:00Z'), task: 'x', chat: '', chatName: '' }, NOW);
+    await expect(call('schedule_task', { at: '2026-11-11 09:00', task: 'x' })).rejects.toThrow('There are already 100 tasks waiting.');
+  });
+
   it('changes nothing in a dry run', async () => {
-    const { call, file, template } = await setup({ dryRun: true });
+    const { call, file, template, tasks } = await setup({ dryRun: true });
     expect(await call('monitor_chat', { chat_id: FAMILY })).toBe(`Dry run: would monitor "Família" (${FAMILY}). Nothing was changed.`);
     expect(await call('set_direct_messages', { enabled: true })).toContain('Dry run: would read every one-to-one conversation');
     expect(await readFile(file, 'utf8')).toBe(template);
+    expect(await call('schedule_task', { at: '2026-11-11 09:00', task: 'x', chat_id: BOB })).toBe(
+      `Dry run: would schedule the task for Wed 2026-11-11 09:00, about "Bob" (${BOB}). Nothing was scheduled.`,
+    );
+    expect(tasks.pending()).toEqual([]);
   });
 });
 

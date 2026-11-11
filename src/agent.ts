@@ -8,10 +8,11 @@ import { downloadForHook, type HookRunner, hooksFor } from './hooks.js';
 import type { InstructionsStore } from './instructions.js';
 import type { Logger } from './log.js';
 import type { MediaKind, MediaProcessor, MediaResult } from './media.js';
-import { buildPrompt } from './prompt.js';
+import { buildPrompt, buildTaskPrompt } from './prompt.js';
 import { type RoutingRules, routeMessage } from './router.js';
 import type { AgentState } from './state.js';
-import { dayKey, localHour, previousDay } from './time.js';
+import { type Task, type TaskStore, taskResult } from './tasks.js';
+import { dayKey, formatLocalTime, localHour, previousDay } from './time.js';
 import type { LiveRouting } from './settings.js';
 import type { McpServer, ToolRegistry, ToolSet } from './tools.js';
 import type { Action, Batch, ChatMessage, Decision } from './types.js';
@@ -26,6 +27,8 @@ const MAX_MEDIA_PER_BATCH = 10;
 const MEDIA_CONCURRENCY = 3;
 /** The local hour from which the stream shows the cost of the day before. */
 const DAILY_COST_HOUR = 1;
+/** A task found this late, because the agent was off when it was due, is not run. */
+const MAX_TASK_DELAY_MS = 12 * 3_600_000;
 
 export interface AgentEvents {
   /** A message passed routing and is waiting for its batch. */
@@ -52,6 +55,8 @@ export interface AgentDeps {
   hookRunner?: HookRunner;
   /** [routing] as it is now in the config file; absent keeps the settings the agent started with. */
   routing?: LiveRouting;
+  /** The tasks the owner scheduled, run when they are due; absent runs none. */
+  tasks?: TaskStore;
   instructions: InstructionsStore;
   log: Logger;
   dryRun?: boolean;
@@ -74,6 +79,8 @@ export class Agent {
   private readonly forwardTranscripts = new Set<string>();
   /** Audio of chats nobody follows, transcribed one at a time for the home chat. */
   private transcriptions: Promise<void> = Promise.resolve();
+  /** Due tasks already in the queue, by ID, so each one is queued once. */
+  private readonly queuedTasks = new Set<number>();
 
   constructor(private readonly deps: AgentDeps) {
     const { routing } = deps.config;
@@ -465,6 +472,134 @@ export class Agent {
     }
   }
 
+  /**
+   * Queues the scheduled tasks that are due, to run one at a time with the decisions, since they
+   * share the tools workspace. The service calls this every few seconds.
+   */
+  runDueTasks(): void {
+    const { tasks, log } = this.deps;
+    if (tasks === undefined) return;
+    let due: Task[];
+    try {
+      due = tasks.due(this.now());
+    } catch (error) {
+      log.warn('could not read the scheduled tasks', { error: errorMessage(error) });
+      return;
+    }
+    for (const task of due) {
+      if (this.queuedTasks.has(task.id)) continue;
+      this.queuedTasks.add(task.id);
+      this.queue = this.queue
+        .then(() => this.runTask(task))
+        .catch((error: unknown) => {
+          log.error('could not run a task', { task: task.id, error: errorMessage(error) });
+        })
+        .finally(() => this.queuedTasks.delete(task.id));
+    }
+  }
+
+  /**
+   * Fails the tasks that were running when the agent last stopped, and tells the owner: they are
+   * not run again, since a message they were sending may have gone out. Called once at start.
+   */
+  failInterruptedTasks(): void {
+    const { tasks, log } = this.deps;
+    if (tasks === undefined) return;
+    try {
+      for (const task of tasks.failInterrupted(this.now())) {
+        log.warn('task failed', { ...taskFields(task), reason: task.error });
+        this.queue = this.queue.then(() => this.tellTaskFailed(task, task.error));
+      }
+    } catch (error) {
+      log.warn('could not read the scheduled tasks', { error: errorMessage(error) });
+    }
+  }
+
+  /** Runs a due task: a decision on the owner's words, in the chat the task is about. */
+  private async runTask(task: Task): Promise<void> {
+    const { config, tasks, state, usage, log } = this.deps;
+    if (tasks === undefined) return;
+    const now = this.now();
+    // Cancelled meanwhile, or run by another agent process.
+    if (!tasks.start(task.id, now)) return;
+    const fields = taskFields(task);
+    let cost = 0;
+    const fail = async (status: 'failed' | 'missed', reason: string) => {
+      try {
+        tasks.finish(task.id, { status, error: reason }, this.now());
+      } catch (error) {
+        log.error('could not record a task', { ...fields, error: errorMessage(error) });
+      }
+      log.warn(status === 'missed' ? 'task missed' : 'task failed', { ...fields, reason, cost: cost > 0 ? roundCost(cost) : undefined });
+      await this.tellTaskFailed(task, reason, status);
+    };
+    try {
+      if (now.getTime() - task.dueAt.getTime() > MAX_TASK_DELAY_MS) {
+        await fail('missed', 'the agent was not running when it was due');
+        return;
+      }
+      if (usage.callsOn(dayKey(now, config.agent.timezone)) >= config.engine.maxCallsPerDay || usage.limitReached(now) !== undefined) {
+        await fail('failed', 'a call or cost limit was reached');
+        return;
+      }
+      const home = config.agent.homeChat;
+      const chat = task.chat || home;
+      const chatName = task.chat === '' ? '' : task.chatName || state.chatName(task.chat);
+      const context: ActionContext = { chat, chatName, replyAllowed: chat !== '', ownerCommand: true, messageIds: [] };
+      // The tools of a command typed in the home chat, wherever the task replies.
+      const tools = this.toolsFor({ ...context, chat: home });
+      const history = task.chat === '' || task.chat === home ? [] : await this.loadHistory({ chat: task.chat, chatName, messages: [] });
+      const prompt = buildTaskPrompt({
+        agent: config.agent,
+        instructions: await this.deps.instructions.read(),
+        task,
+        chat: { id: chat, name: chatName },
+        history,
+        now,
+        tools,
+      });
+      let tokens = NO_USAGE;
+      let decision: Decision;
+      try {
+        decision = await this.deps.decider.decide(prompt, {
+          tools,
+          onAttempt: (attempt) => {
+            cost += this.recordAttempt(attempt, { chat, chatName, prompt, purpose: 'task' });
+            tokens = addUsage(tokens, attempt.usage);
+          },
+        });
+      } catch (error) {
+        await fail('failed', errorMessage(error));
+        return;
+      }
+      for (const warning of decision.warnings) log.warn('model answer', { chat, warning });
+      log.info('task', {
+        ...fields,
+        actions: decision.actions.map((action) => action.type),
+        inputTokens: tokens.inputTokens,
+        outputTokens: tokens.outputTokens,
+        cost: roundCost(cost),
+      });
+      await this.execute(decision.actions, context);
+      tasks.finish(task.id, { status: 'done', result: taskResult(decision.actions, chatName || chat.split('@')[0] || 'the chat') }, this.now());
+      await this.warnNearLimits(context);
+    } catch (error) {
+      if (tasks.get(task.id)?.status !== 'running') throw error;
+      await fail('failed', errorMessage(error));
+    }
+  }
+
+  /** "⚠️ Scheduled task not run (Thu 2026-11-12 09:00, Carol): …", then what it said. */
+  private async tellTaskFailed(task: Task, reason: string, status: 'failed' | 'missed' = 'failed'): Promise<void> {
+    const { config } = this.deps;
+    const zone = config.agent.timezone;
+    const where = task.chat === '' ? '' : `, ${task.chatName || task.chat.split('@')[0]}`;
+    const what = status === 'missed' ? 'not run' : 'failed';
+    const text = `⚠️ Scheduled task ${what} (${formatLocalTime(task.dueAt, zone)}${where}): ${reason}${task.task === '' ? '' : `\n${task.task}`}`;
+    const context: ActionContext = { chat: config.agent.homeChat, chatName: '', replyAllowed: false, ownerCommand: false, messageIds: [] };
+    await this.execute([{ type: 'notify', text }], context);
+  }
+
   /** Stores one run of the engine and logs it; returns its cost. */
   private recordAttempt(attempt: Attempt, call: CallContext): number {
     const { usage, log } = this.deps;
@@ -621,7 +756,7 @@ export class Agent {
   }
 
   /** Tells the owner, once per period, that a cost limit is nearly used up. */
-  private async warnNearLimits(context: ActionContext, batchId: number): Promise<void> {
+  private async warnNearLimits(context: ActionContext, batchId?: number): Promise<void> {
     const { config, state, usage } = this.deps;
     const now = this.now();
     for (const near of usage.nearLimits(now)) {
@@ -692,6 +827,11 @@ export class Agent {
   private now(): Date {
     return this.deps.now?.() ?? new Date();
   }
+}
+
+/** What the log says about a task. */
+function taskFields(task: Task): Record<string, unknown> {
+  return { task: task.id, chat: task.chat || undefined, chatName: task.chatName || undefined };
 }
 
 /** A message's chat and ID, which together identify it. */

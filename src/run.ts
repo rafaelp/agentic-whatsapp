@@ -16,6 +16,7 @@ import { cliServer } from './commands.js';
 import { settingsServer } from './settings-mcp.js';
 import { LiveRouting } from './settings.js';
 import { AgentState } from './state.js';
+import { TaskStore } from './tasks.js';
 import { ToolRegistry } from './tools.js';
 import { UsageLedger } from './usage.js';
 import { errorMessage } from './util.js';
@@ -24,6 +25,7 @@ import { SyncSupervisor, Wacli } from './wacli.js';
 const DRAIN_TIMEOUT_MS = 15_000;
 const PRUNE_EVERY_MS = 6 * 3_600_000;
 const DAILY_COST_CHECK_MS = 60_000;
+const TASK_CHECK_MS = 15_000;
 
 export interface RunOptions {
   dryRun: boolean;
@@ -72,6 +74,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   const imported = await state.importLegacy(join(paths.stateDir, 'state.json'));
   if (imported > 0) log.info('imported state.json into the database', { entries: imported, database: paths.database });
   const usage = new UsageLedger(store, config.engine, config.costs, config.agent.timezone, config.storage.saveText);
+  const tasks = new TaskStore(state, { saveText: config.storage.saveText });
   const registry = new ToolRegistry(store, paths.skillsDir);
   const tools = config.engine.kind === 'antigravity' ? registry : undefined;
   if (tools === undefined && hasEnabledTools(registry)) {
@@ -133,6 +136,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     cliServer: tools !== undefined && config.cli.allow.length > 0 ? cliServer(config, { dryRun: options.dryRun }) : undefined,
     hookRunner: tools === undefined ? undefined : hookRunnerOf(engine),
     routing: new LiveRouting({ configFile: paths.configFile, stateDir: paths.stateDir, logDir: paths.logDir }, config.routing, log),
+    tasks,
     instructions,
     log,
     dryRun: options.dryRun,
@@ -181,6 +185,11 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     },
   );
   sync.start();
+  // Tasks send through wacli like any decision, so they start once sync does.
+  agent.failInterruptedTasks();
+  agent.runDueTasks();
+  const taskTimer = setInterval(() => agent.runDueTasks(), TASK_CHECK_MS);
+  taskTimer.unref();
 
   if (config.agent.homeChat === '') {
     log.warn('agent.home_chat is not set: notifications only go to this log');
@@ -197,6 +206,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     settingsTools: tools !== undefined && config.agent.settingsTools,
     cliRules: tools === undefined ? undefined : config.cli.allow.length || undefined,
     hooks: tools === undefined ? undefined : config.hooks.map((hook) => hook.name),
+    scheduledTasks: tasks.pending().length || undefined,
     skills: tools?.skills().filter((skill) => skill.enabled).length,
     mcpServers: tools?.servers().filter((server) => server.enabled).length,
     media: media === undefined ? undefined : [config.media.images && 'images', config.media.audio && 'audio'].filter(Boolean),
@@ -208,6 +218,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   });
 
   log.info('stopping');
+  clearInterval(taskTimer);
   await receiver.close();
   const dropped = agent.discardPending();
   if (dropped > 0) log.warn('dropped chats still waiting for their debounce', { chats: dropped });

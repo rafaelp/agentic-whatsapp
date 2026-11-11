@@ -189,6 +189,25 @@ const MIGRATIONS = [
   -- clientId and clientSecret. agy keeps the tokens.
   ALTER TABLE mcp_servers ADD COLUMN oauth TEXT;
   `,
+  `
+  -- Tasks the owner scheduled: what to do, in the owner's words, when (due_at), and the chat it is
+  -- about, where a reply goes ('' for none). status: pending, running, done, failed, missed or
+  -- cancelled. result says what it did, kept like other texts; error why it did not.
+  CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    due_at TEXT NOT NULL,
+    task TEXT,
+    chat TEXT NOT NULL DEFAULT '',
+    chat_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT,
+    finished_at TEXT,
+    result TEXT,
+    error TEXT
+  );
+  CREATE INDEX tasks_due ON tasks (status, due_at);
+  `,
 ];
 
 /**

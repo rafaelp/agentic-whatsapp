@@ -2,9 +2,14 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Config } from './config.js';
+import { Store } from './db.js';
+import { createLogger, type Logger } from './log.js';
 import { costSummary } from './report.js';
 import { openLedger } from './service.js';
 import { CHAT_JID, ConfigFile, GROUP_JID } from './settings.js';
+import { AgentState } from './state.js';
+import { MAX_PENDING_TASKS, MAX_TASK_LENGTH, type Task, TaskStore } from './tasks.js';
+import { formatLocalTime, parseLocalTime, weekday } from './time.js';
 import { type McpServer, SETTINGS_SERVER } from './tools.js';
 import { asString, errorMessage, isRecord } from './util.js';
 import type { ChatInfo } from './wacli.js';
@@ -110,6 +115,9 @@ export const SETTINGS_TOOLS = [
   'set_direct_messages',
   'set_auto_reply',
   'get_costs',
+  'schedule_task',
+  'list_tasks',
+  'cancel_task',
 ] as const;
 
 /** What the settings tools need from wacli: the local archive, read-only. */
@@ -123,12 +131,23 @@ export interface SettingsToolsDeps {
   chats: ChatDirectory;
   /** Every cost figure for the last `days` days, as costSummary in src/report.ts gives them. */
   costs: (days: number) => Promise<Record<string, unknown>>;
+  /** The scheduled tasks, which the running agent does when they are due. */
+  tasks: TaskStore;
+  /** agent.timezone: task times are given and shown in it. */
+  timezone: string;
+  /** The agent log, for the tasks scheduled and cancelled. */
+  log: Logger;
   /** Say what would change, and change nothing. */
   dryRun: boolean;
+  now?: () => Date;
 }
 
 const MAX_FOUND = 20;
 const MAX_COST_DAYS = 90;
+/** How far ahead a task can be scheduled. */
+const MAX_TASK_DAYS = 366;
+/** Finished tasks list_tasks shows. */
+const RECENT_TASKS = 10;
 
 /** Costs to a millionth, enough for the cheapest call, and fewer tokens for the model to read. */
 const roundCosts = (key: string, value: unknown) => (key === 'cost' && typeof value === 'number' ? Math.round(value * 1e6) / 1e6 : value);
@@ -136,10 +155,24 @@ const roundCosts = (key: string, value: unknown) => (key === 'cost' && typeof va
 /**
  * The agent's own settings, as MCP tools: which groups it reads, whether it reads direct
  * messages, and where it may reply without being asked. They edit [routing] in the config
- * file, and the running agent picks the change up with its next message.
+ * file, and the running agent picks the change up with its next message. The task tools
+ * schedule work for later in the database, where the running agent finds it when it is due.
  */
 export function settingsTools(deps: SettingsToolsDeps): ToolDefinition[] {
-  const { config, chats, costs, dryRun } = deps;
+  const { config, chats, costs, tasks, timezone, log, dryRun } = deps;
+  const now = deps.now ?? (() => new Date());
+  /** "Thu 2026-11-12 09:00", in the owner's time zone. */
+  const when = (date: Date) => `${weekday(date, timezone)} ${formatLocalTime(date, timezone)}`;
+  const taskJson = (task: Task) => ({
+    id: task.id,
+    at: when(task.dueAt),
+    chat_id: task.chat || undefined,
+    chat: task.chat === '' ? undefined : task.chatName || null,
+    task: task.task || null,
+    status: task.status === 'pending' ? undefined : task.status,
+    result: task.result || undefined,
+    error: task.status === 'cancelled' ? undefined : task.error || undefined,
+  });
   const label = (chat: ChatInfo | null, jid: string) => (chat === null || chat.name === '' ? jid : `"${chat.name}" (${jid})`);
   const known = async (jid: string, pattern: RegExp, what: string): Promise<ChatInfo> => {
     if (!pattern.test(jid)) throw new ToolCallError(`${JSON.stringify(jid)} is not a ${what} id. Find it with find_chats.`);
@@ -327,17 +360,108 @@ export function settingsTools(deps: SettingsToolsDeps): ToolDefinition[] {
         return JSON.stringify(await costs(days), roundCosts);
       },
     },
+    {
+      name: 'schedule_task',
+      description:
+        'Schedules something for you to do later, at a given time: a message to someone, a reminder for the owner, ' +
+        'anything you can do with your tools. When it is due you get the task as an owner command, with the chat it ' +
+        'is about, where a reply then goes.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          at: { type: 'string', description: `When, in local time (${timezone}), as YYYY-MM-DD HH:MM` },
+          task: {
+            type: 'string',
+            description:
+              'What to do then, complete enough to do without this conversation, and without the date or time: who, ' +
+              'what and how, in the language of the owner. E.g. "Send Carol a message saying she needs to buy juice".',
+          },
+          chat_id: {
+            type: 'string',
+            description: 'The chat the task is about, from find_chats, such as the person to message. Leave it out for a task for the owner.',
+          },
+        },
+        required: ['at', 'task'],
+        additionalProperties: false,
+      },
+      async call(args) {
+        const at = asString(args.at).trim();
+        const dueAt = parseLocalTime(at, timezone);
+        const current = now();
+        if (dueAt === undefined) {
+          throw new ToolCallError(`"at" must be a local time as YYYY-MM-DD HH:MM, such as ${formatLocalTime(current, timezone)}.`);
+        }
+        // The current minute still counts, so "in a minute" works when the clock turns meanwhile.
+        if (dueAt.getTime() < current.getTime() - (current.getTime() % 60_000)) {
+          throw new ToolCallError(`${at} is in the past: it is now ${when(current)} (${timezone}).`);
+        }
+        if (dueAt.getTime() > current.getTime() + MAX_TASK_DAYS * 86_400_000) {
+          throw new ToolCallError(`A task can be scheduled at most ${MAX_TASK_DAYS} days ahead.`);
+        }
+        const task = asString(args.task).trim();
+        if (task === '') throw new ToolCallError('Say what to do in "task".');
+        if (task.length > MAX_TASK_LENGTH) throw new ToolCallError(`"task" can have at most ${MAX_TASK_LENGTH} characters.`);
+        const jid = asString(args.chat_id).trim();
+        const chat = jid === '' ? undefined : await known(jid, CHAT_JID, 'chat');
+        if (tasks.pending().length >= MAX_PENDING_TASKS) {
+          throw new ToolCallError(`There are already ${MAX_PENDING_TASKS} tasks waiting. Cancel some first.`);
+        }
+        const where = chat === undefined ? '' : `, about ${label(chat, jid)}`;
+        if (dryRun) return `Dry run: would schedule the task for ${when(dueAt)}${where}. Nothing was scheduled.`;
+        const scheduled = tasks.schedule({ dueAt, task, chat: jid, chatName: chat?.name ?? '' }, current);
+        log.info('task scheduled', {
+          task: scheduled.id,
+          due: formatLocalTime(dueAt, timezone),
+          chat: jid || undefined,
+          chatName: chat?.name || undefined,
+        });
+        return `Scheduled task ${scheduled.id} for ${when(dueAt)} (${timezone})${where}.`;
+      },
+    },
+    {
+      name: 'list_tasks',
+      description:
+        'Lists the scheduled tasks still to do, the next one first, with their id, time, chat and what they say, and ' +
+        `the last ${RECENT_TASKS} that ran, failed, were missed or were cancelled, with what came of them.`,
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      async call() {
+        return JSON.stringify({ pending: tasks.pending().map(taskJson), recent: tasks.finished(RECENT_TASKS).map(taskJson) });
+      },
+    },
+    {
+      name: 'cancel_task',
+      description: 'Cancels a scheduled task that has not run yet, by its id from list_tasks.',
+      inputSchema: {
+        type: 'object',
+        properties: { task_id: { type: 'integer', description: 'The id of the task, from list_tasks' } },
+        required: ['task_id'],
+        additionalProperties: false,
+      },
+      async call(args) {
+        const id = args.task_id;
+        if (typeof id !== 'number' || !Number.isInteger(id)) throw new ToolCallError('"task_id" must be the id of a task, from list_tasks.');
+        const task = tasks.get(id);
+        if (task === undefined) throw new ToolCallError(`There is no task ${id}. See the tasks with list_tasks.`);
+        if (task.status !== 'pending') return `Task ${id} cannot be cancelled: it is ${task.status}.`;
+        if (dryRun) return `Dry run: would cancel task ${id}. Nothing was changed.`;
+        if (tasks.cancel(id, now()) === undefined) return `Task ${id} cannot be cancelled: it has just started.`;
+        log.info('task cancelled', { task: id, chat: task.chat || undefined, chatName: task.chatName || undefined });
+        return `Done: task ${id}, for ${when(task.dueAt)}, is cancelled.`;
+      },
+    },
   ];
 }
 
 /** How the model is told about the settings tools, in <tools>. */
 const SETTINGS_DESCRIPTION =
-  'your own settings, and what you cost. When the owner asks about costs, tokens or limits, call get_costs once ' +
+  'your own settings, what you cost, and the tasks the owner scheduled for later. When the owner asks about costs, tokens or limits, call get_costs once ' +
   'and answer from it. You only read the chats you monitor, plus the owner\'s commands: your instructions alone ' +
   'cannot make you read a person or a group. When an owner command asks you to follow, monitor or watch a chat, ' +
   'or gives a rule about someone you do not monitor, find the chat with find_chats and use monitor_chat. When more ' +
   'than one chat matches, ask the owner which one instead of guessing. Change settings only when an owner command ' +
-  'asks, and tell the owner what changed with a notify';
+  'asks, and tell the owner what changed with a notify. When an owner command asks for something at a later time, ' +
+  'such as "tomorrow at 9 tell Carol…" or "remind me in two hours…", schedule it with schedule_task, with the chat ' +
+  'it is about from find_chats, and tell the owner when it will run. Check the day of the week schedule_task gives back';
 
 /**
  * The built-in settings server as agy starts it: this same CLI, `settings-mcp`, with the
@@ -366,6 +490,10 @@ export function settingsServer(config: Config, options: { dryRun: boolean; cli?:
 /** `agentic-whatsapp settings-mcp`: the settings server on stdin and stdout, until agy closes it. */
 export async function serveSettings(config: Config, options: { dryRun: boolean; version: string; chats: ChatDirectory }): Promise<void> {
   const { paths } = config;
+  const store = Store.open(paths.database);
+  const tasks = new TaskStore(new AgentState(store, { saveText: config.storage.saveText }), { saveText: config.storage.saveText });
+  // The agent rotates its log; this process only appends to it.
+  const log = createLogger({ stderr: false, file: { path: paths.agentLog, maxBytes: Number.POSITIVE_INFINITY, keep: 1 } });
   const costs = async (days: number) => {
     const opened = openLedger(config);
     try {
@@ -378,9 +506,13 @@ export async function serveSettings(config: Config, options: { dryRun: boolean; 
     { configFile: paths.configFile, stateDir: paths.stateDir, logDir: paths.logDir },
     join(paths.stateDir, 'config-history'),
   );
-  await serveMcp(
-    { name: SETTINGS_SERVER, version: options.version },
-    settingsTools({ config: file, chats: options.chats, costs, dryRun: options.dryRun }),
-    { input: process.stdin, write: (line) => process.stdout.write(line) },
-  );
+  try {
+    await serveMcp(
+      { name: SETTINGS_SERVER, version: options.version },
+      settingsTools({ config: file, chats: options.chats, costs, tasks, timezone: config.agent.timezone, log, dryRun: options.dryRun }),
+      { input: process.stdin, write: (line) => process.stdout.write(line) },
+    );
+  } finally {
+    store.close();
+  }
 }

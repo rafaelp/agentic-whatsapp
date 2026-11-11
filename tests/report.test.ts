@@ -88,10 +88,14 @@ describe('costReport', () => {
       },
       { chat: BOB, chatName: 'Bob', purpose: 'image' },
     );
+    ledger.record(
+      { attempt: 1, startedAt: NOW, durationMs: 1, status: 'ok', usage: { inputTokens: 9_000, outputTokens: 30, thinkingTokens: 0, cachedTokens: 0 }, tools: [] },
+      { chat: BOB, chatName: 'Bob', purpose: 'task' },
+    );
     const lines = costReport(config, ledger, NOW, { days: 7, by: 'purpose', json: false });
     expect(lines).toContain('Last 7 day(s), by purpose:');
     expect(lines.map((line) => line.trim().split(/ +/).slice(0, 2).join(' '))).toEqual(
-      expect.arrayContaining(['decisions 3', 'images 1']),
+      expect.arrayContaining(['decisions 3', 'images 1', 'scheduled tasks']),
     );
   });
 

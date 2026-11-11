@@ -14,12 +14,12 @@ describe('Store', () => {
     const dir = await tempDir();
     const file = join(dir, 'state', 'agentic-whatsapp.db');
     const store = Store.open(file);
-    expect(store.version).toBe(6);
+    expect(store.version).toBe(7);
     store.setMeta('k', 'v');
     store.close();
 
     const again = Store.open(file);
-    expect(again.version).toBe(6);
+    expect(again.version).toBe(7);
     expect(again.meta('k')).toBe('v');
     again.close();
     expect(statSync(file).mode & 0o777).toBe(0o600);

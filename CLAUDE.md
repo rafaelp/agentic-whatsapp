@@ -27,7 +27,7 @@ guarantees, and CONTRIBUTING.md how to work on it.
   credentials, unreadable to the model.
 - The agent's own settings server (`src/settings-mcp.ts`) is offered only for commands typed in
   the home chat (`Agent.toolsFor`). A tool that writes must stay inside `[routing]`, or SECURITY.md
-  has to say why; it edits the file through `ConfigFile` in `src/settings.ts`, which checks the
+  has to say why (the task tools write the `tasks` table; `src/tasks.ts`, run by `Agent.runDueTasks`); it edits the file through `ConfigFile` in `src/settings.ts`, which checks the
   result and keeps the previous version. Only `[routing]` is read again while running (`LiveRouting`).
   `get_costs` and `agentic-whatsapp costs --json` share `src/report.ts`; change both together.
 - Commands run only through `run_cli` (`src/commands.ts`): no shell, checked against `[cli]` by

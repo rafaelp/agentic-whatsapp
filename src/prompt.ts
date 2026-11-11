@@ -1,4 +1,5 @@
 import type { AgentConfig } from './config.js';
+import type { Task } from './tasks.js';
 import { formatLocalTime } from './time.js';
 import { hasTools, type ToolSet } from './tools.js';
 import type { Batch, ChatMessage, RoutedMessage } from './types.js';
@@ -83,6 +84,61 @@ export function buildPrompt(input: PromptInput): string {
     '<new_messages>',
     ...batch.messages.map((message) => jsonLine(renderNew(message, zone))),
     '</new_messages>',
+    '',
+    'Decide what to do now. Answer with the JSON object only.',
+  ].join('\n');
+}
+
+export interface TaskPromptInput {
+  agent: AgentConfig;
+  instructions: string;
+  task: Pick<Task, 'id' | 'task' | 'createdAt' | 'dueAt'>;
+  /** The chat the task is about, where a reply goes: the home chat for a task for the owner. */
+  chat: { id: string; name: string };
+  /** The chat's last messages, for a task about another chat. */
+  history: ChatMessage[];
+  now: Date;
+  tools?: ToolSet;
+}
+
+/**
+ * The input of a scheduled task that is due: the owner's words as a new command in the chat it
+ * is about, so a reply goes there, as on a command with an @mention.
+ */
+export function buildTaskPrompt(input: TaskPromptInput): string {
+  const { agent, task, chat, history } = input;
+  const zone = agent.timezone;
+  return [
+    `Current time: ${formatLocalTime(input.now, zone)} (${zone})`,
+    '',
+    '<instructions>',
+    input.instructions === '' ? '(none yet)' : input.instructions,
+    '</instructions>',
+    '',
+    ...toolsSection(input.tools),
+    '<chat>',
+    jsonLine({ id: chat.id, name: chat.name === '' ? null : chat.name, type: chatKind(chat.id), reply_allowed: chat.id !== '' }),
+    '</chat>',
+    '',
+    '<history>',
+    ...(history.length === 0 ? ['(no earlier messages)'] : history.map((message) => jsonLine(render(message, zone)))),
+    '</history>',
+    '',
+    '<new_messages>',
+    jsonLine({
+      id: `task-${task.id}`,
+      time: formatLocalTime(task.createdAt, zone),
+      sender: 'owner',
+      text: task.task,
+      owner_command: true,
+      scheduled_for: formatLocalTime(task.dueAt, zone),
+    }),
+    '</new_messages>',
+    '',
+    'The new message is a task the owner scheduled for this time, and it is due now: do it now, and do not schedule ' +
+      'it again. A "reply" goes to the chat in <chat>, sent as the owner: when the task is to send someone a message, ' +
+      'send it as a reply, written for them, without saying it was scheduled. Use a notify only when the task is for ' +
+      'the owner, or when it cannot be done.',
     '',
     'Decide what to do now. Answer with the JSON object only.',
   ].join('\n');

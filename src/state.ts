@@ -31,6 +31,9 @@ export interface DailyCost {
   currency: string;
 }
 
+/** What happened to a scheduled task, as its entries in the stream say. */
+export type TaskEvent = 'scheduled' | 'done' | 'failed' | 'missed' | 'cancelled';
+
 /**
  * An entry of the stream: highlighted messages, or, with kind `daily_cost`, the cost of a
  * day (with no chat, IDs or text).
@@ -38,10 +41,12 @@ export interface DailyCost {
 export interface Highlight extends HighlightRecord {
   id: number;
   at: Date;
-  kind: 'messages' | 'daily_cost' | 'deleted' | 'transcript';
+  kind: 'messages' | 'daily_cost' | 'deleted' | 'transcript' | 'task';
   /** Why an audio of a transcript entry could not be transcribed. */
   note?: string;
   dailyCost?: DailyCost;
+  /** The scheduled task of a task entry, and what happened to it. */
+  task?: { id: number; event: TaskEvent };
 }
 
 /** A message as the database has it, for the stream. Text is empty when it was not kept. */
@@ -235,6 +240,20 @@ export class AgentState {
     ).id;
   }
 
+  /**
+   * Puts what happened to a scheduled task in the stream. Its text, time and result come from
+   * the tasks table when the stream shows it.
+   */
+  recordTaskEvent(task: { id: number; chat: string; chatName: string }, event: TaskEvent, at: Date = new Date()): number {
+    return this.store.run(
+      "INSERT INTO highlights (at, chat, chat_name, kind, data) VALUES (?, ?, ?, 'task', ?)",
+      at.toISOString(),
+      task.chat,
+      task.chatName,
+      JSON.stringify({ task: task.id, event }),
+    ).id;
+  }
+
   /** Puts the cost of a day in the stream. */
   recordDailyCost(cost: DailyCost, at: Date = new Date()): number {
     return this.store.run(
@@ -336,8 +355,8 @@ export class AgentState {
   }
 
   /**
-   * Deletes message text, descriptions and transcripts, prompts, answers, sent text and the
-   * reasons of highlights older than `before`. IDs, names, decisions, tokens and costs stay, so duplicates are still
+   * Deletes message text, descriptions and transcripts, prompts, answers, sent text, the
+   * reasons of highlights and the text of tasks that finished, older than `before`. IDs, names, decisions, tokens and costs stay, so duplicates are still
    * recognized and costs still add up.
    */
   pruneText(before: Date): number {
@@ -355,6 +374,10 @@ export class AgentState {
         this.store.run('UPDATE sent SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
         this.store.run('UPDATE highlights SET text = NULL WHERE at < ? AND text IS NOT NULL', cutoff).changes +
         this.store.run('UPDATE commands SET args = NULL WHERE at < ? AND args IS NOT NULL', cutoff).changes +
+        this.store.run(
+          'UPDATE tasks SET task = NULL, result = NULL WHERE finished_at < ? AND (task IS NOT NULL OR result IS NOT NULL)',
+          cutoff,
+        ).changes +
         this.store.run(
           `UPDATE batches SET actions = (SELECT json_group_array(json_object('type', json_extract(value, '$.type')))
              FROM json_each(batches.actions))
@@ -440,8 +463,17 @@ function highlightOf(row: Row): Highlight {
       ? { kind: 'daily_cost', dailyCost: dailyCostOf(json<Record<string, unknown>>(row.data, {})) }
       : text(row.kind) === 'transcript'
         ? { kind: 'transcript', ...noteOf(json<Record<string, unknown>>(row.data, {})) }
-        : { kind: text(row.kind) === 'deleted' ? 'deleted' : 'messages' }),
+        : text(row.kind) === 'task'
+          ? { kind: 'task', task: taskEventOf(json<Record<string, unknown>>(row.data, {})) }
+          : { kind: text(row.kind) === 'deleted' ? 'deleted' : 'messages' }),
   };
+}
+
+const TASK_EVENTS: readonly TaskEvent[] = ['scheduled', 'done', 'failed', 'missed', 'cancelled'];
+
+function taskEventOf(data: Record<string, unknown>): { id: number; event: TaskEvent } {
+  const event = TASK_EVENTS.find((item) => item === data.event) ?? 'scheduled';
+  return { id: typeof data.task === 'number' ? data.task : 0, event };
 }
 
 function noteOf(data: Record<string, unknown>): { note?: string } {

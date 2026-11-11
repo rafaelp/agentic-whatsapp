@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { Store } from '../src/db.js';
 import { AgentState, type Highlight, type StoredText } from '../src/state.js';
 import { CLEAR_SCREEN, HighlightRenderer, stream } from '../src/stream.js';
+import type { Task } from '../src/tasks.js';
 import { BOB, FAMILY, HOME, makeConfig, message, NOW, tempDir } from './helpers.js';
 
 const config = makeConfig();
@@ -79,6 +80,56 @@ describe('HighlightRenderer, daily costs', () => {
     expect(await renderer().render(daily, [])).toEqual(['01:00:00  Σ Costs of 2026-11-09: $0.4213 in 37 model calls · 1.25M tokens in, 31k out']);
     const one = { ...daily, dailyCost: { day: '2026-11-09', calls: 1, inputTokens: 900, outputTokens: 50, cost: 2.5, currency: 'BRL' } };
     expect(await renderer(false).render(one, [])).toEqual(['01:00:00  Σ Costs of 2026-11-09: 2.50 BRL in 1 model call · 900 tokens in, 50 out']);
+  });
+});
+
+describe('HighlightRenderer, scheduled tasks', () => {
+  const task = (overrides: Partial<Task> = {}): Task => ({
+    id: 3,
+    createdAt: NOW,
+    dueAt: new Date('2026-11-11T12:00:00Z'),
+    task: 'Dizer ao Bob que precisa comprar suco',
+    chat: BOB,
+    chatName: 'Bob',
+    status: 'pending',
+    result: '',
+    error: '',
+    ...overrides,
+  });
+  const entry = (event: NonNullable<Highlight['task']>['event'], overrides: Partial<Highlight> = {}) =>
+    highlight({ kind: 'task', chat: BOB, chatName: 'Bob', ids: [], text: '', task: { id: 3, event }, ...overrides });
+
+  it('shows a task when it is scheduled, with its time, its chat and what it says', async () => {
+    expect(await renderer().render(entry('scheduled'), [], task())).toEqual([
+      '12:00:00  ⏰ Task 3 for Wed 2026-11-11 09:00 · Bob',
+      '          Dizer ao Bob que precisa comprar suco',
+    ]);
+    expect(await renderer().render(entry('scheduled', { chat: '', chatName: '' }), [], task({ chat: '', chatName: '' }))).toEqual([
+      '12:00:00  ⏰ Task 3 for Wed 2026-11-11 09:00',
+      '          Dizer ao Bob que precisa comprar suco',
+    ]);
+  });
+
+  it('shows what a task did, or why it did not run, and only that with --no-text', async () => {
+    const done = task({ status: 'done', result: '→ Bob: Bob, precisa comprar suco!' });
+    expect(await renderer().render(entry('done'), [], done)).toEqual([
+      '12:00:00  ✅ Task 3 done · Bob',
+      '          Dizer ao Bob que precisa comprar suco',
+      '          → Bob: Bob, precisa comprar suco!',
+    ]);
+    expect(await renderer().render(entry('failed'), [], task({ status: 'failed', error: 'quota exceeded' }))).toEqual([
+      '12:00:00  ⚠ Task 3 failed · Bob: quota exceeded',
+      '          Dizer ao Bob que precisa comprar suco',
+    ]);
+    expect((await renderer().render(entry('missed'), [], task({ status: 'missed', error: 'the agent was not running when it was due' })))[0]).toBe(
+      '12:00:00  ⚠ Task 3 not run · Bob: the agent was not running when it was due',
+    );
+    expect((await renderer().render(entry('cancelled'), [], task({ status: 'cancelled', error: 'cancelled by the owner' })))[0]).toBe(
+      '12:00:00  ✖ Task 3 cancelled · Bob',
+    );
+    expect(await renderer(false).render(entry('done'), [], done)).toEqual(['12:00:00  ✅ Task 3 done · Bob']);
+    // A task the database no longer has.
+    expect(await renderer().render(entry('scheduled'), [], undefined)).toEqual(['12:00:00  ⏰ Task 3 · Bob']);
   });
 });
 

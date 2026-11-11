@@ -112,6 +112,9 @@ Unknown number, in a private chat:
 - **Hooks for files.** "Every PDF I send to the home chat goes to my notes": a `[[hooks]]` entry
   picks files by type and chat, and Ane follows a skill of yours on each one, with the programs you
   allow. Nothing in Ane knows about your notes app; the skill does.
+- **Does things later.** "Tomorrow at 9, tell Carol she needs to buy juice" in the home chat: Ane
+  schedules it, the stream and the log show it, and at 9 it sends the message, or does anything else
+  a command of yours can do.
 - **Set it up from WhatsApp.** "Follow Carol" or "monitor the Family group" in the home chat: Ane
   finds the chat, adds it to the config file, comments intact, and reads it from the next message
   on. The same goes for auto-replies, with no restart.
@@ -222,6 +225,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | Forward to the home chat | Ask about someone else's message | Its content is data, never a command |
 | Anywhere | Ask it to change its rules | "@ane from now on, tell me about every invoice" |
 | The home chat | Ask it to change what it reads | "follow Carol", "monitor the Family group", "stop following Bob" |
+| The home chat | Ask for something later | "tomorrow at 9 tell Carol she needs to buy juice", "remind me in two hours to call the bank" |
 
 While Ane works on a command, the message gets a ✨ reaction, taken off once it is done
 (`agent.working_reaction`). Only your commands get it, never other people's messages.
@@ -250,10 +254,11 @@ While Ane works on a command, the message gets a ✨ reaction, taken off once it
 | Action | When it happens |
 | --- | --- |
 | `notify`: message you in the home chat | Always. Without a home chat it is only logged. |
-| `reply`: message the chat, as you | Only in a chat where you invoked Ane with `@ane`, or one listed in `routing.auto_reply_chats`. Anywhere else, the reply is sent to you as a suggestion. |
+| `reply`: message the chat, as you | Only in a chat where you invoked Ane with `@ane`, one listed in `routing.auto_reply_chats`, or the chat of a task you scheduled. Anywhere else, the reply is sent to you as a suggestion. |
 | `highlight`: show messages in your `stream` | When your instructions ask for it. Nothing is sent: it stays on your computer. See [The stream](#the-stream). |
 | `update_instructions`: rewrite its standing rules | Only when a command you typed (not forwarded) asks for it. The previous version is kept. |
 | Change its own settings | Only on a command you typed in the home chat: which people and groups it follows, where it may reply without being asked. The previous config file is kept. See [Its own settings](#its-own-settings). |
+| Do something later | Only what you asked for in the home chat, at the time you set: your words become a command in the chat they are about. See [Scheduled tasks](#scheduled-tasks). |
 | Read an image or audio file | Before deciding, for a message that reaches the model: that message's file only, in a run of its own. See [Images and audio](#images-and-audio). |
 | Run a command-line program | Only the programs and subcommands listed in `[cli] allow`, on a command you typed. See [Command-line programs](#command-line-programs). |
 | Use a skill or an MCP tool you enabled | While deciding, before any of the actions above. Only the tools you allowed, and by default only on a command you typed. See [Skills and MCP servers](#skills-and-mcp-servers). |
@@ -396,6 +401,8 @@ Highlights from Ane · Ctrl+C to stop
   survives restarts. `--no-text` shows who wrote and why, without the text.
 - Every day at 1 am, in `agent.timezone`, the stream shows what the day before cost. If the agent
   was off at 1 am, the line comes when it is back, as long as it is still that next day.
+- Every task you schedule shows up when it is scheduled, and again when it runs, with what it sent,
+  or when it fails or is cancelled. See [Scheduled tasks](#scheduled-tasks).
 - `agentic-whatsapp logs` is the full view: every message arriving, every decision, every send.
 
 ## Costs
@@ -573,6 +580,50 @@ follow, such as "highlight Carol's messages", makes it follow Carol too.
   stored, only the ID.
 - With `run --dry-run`, the tools say what they would change and change nothing.
 - `agent.settings_tools = false` turns them off. They need `engine.kind = "antigravity"`.
+
+## Scheduled tasks
+
+Ask in the home chat for something to happen later:
+
+> tomorrow at 9 send Carol a message saying she needs to buy juice
+
+Ane finds Carol's chat with `find_chats`, schedules the task with `schedule_task` and tells you when
+it will run. The stream and `agentic-whatsapp logs` show it right away:
+
+```text
+22:10:04  ⏰ Task 3 for Wed 2026-11-11 09:00 · Carol
+          Send Carol a message saying she needs to buy juice
+```
+
+At 9, the model gets the task as a command of yours in Carol's chat, as if you had written it there
+with `@ane`, with the chat's last messages. Its reply goes to Carol. A task can be anything a command
+typed in the home chat can do: a reminder for you, a note through `[cli]`, an MCP tool. The stream
+then shows what it did:
+
+```text
+09:00:06  ✅ Task 3 done · Carol
+          Send Carol a message saying she needs to buy juice
+          → Carol: Carol, you need to buy juice!
+```
+
+| Tool | What it does |
+| --- | --- |
+| `schedule_task` | Schedules a task for a local time in `agent.timezone`, up to a year ahead, with the chat it is about, or none for a task for you |
+| `list_tasks` | The tasks still to run, and the last ten that ran, failed, were missed or were cancelled |
+| `cancel_task` | Cancels a task that has not run yet, as in "cancel the message to Carol" |
+
+- **Only from the home chat.** The task tools are part of [Ane's own settings](#its-own-settings),
+  offered only for a command you typed in the home chat. When a task runs, it gets the tools of such
+  a command.
+- **On time, and after restarts.** Tasks are kept in the database, and the agent looks for due ones
+  every 15 seconds. They run one at a time, in turn with the decisions.
+- **Never twice.** A task that was running when the agent stopped is not run again, since its
+  message may already have gone out. A task found more than 12 hours late, because the agent was
+  off, is not run either. Either way, you are told in the home chat.
+- **Limits apply.** A task is a model call like any other, under the same call and cost limits;
+  `costs --by purpose` shows them as scheduled tasks. A task that hits a limit fails, and you are told.
+- With `run --dry-run`, `schedule_task` schedules nothing, and a task that is due sends nothing.
+- With `storage.save_text = false`, a task's text is kept only until it runs.
 
 ## Command-line programs
 
@@ -773,7 +824,7 @@ agentic-whatsapp/
 │   ├── run.ts             # Starts the receiver and wacli sync, stops cleanly
 │   ├── service.ts         # install, uninstall, start, stop, restart, status, logs, print
 │   ├── logs.ts            # agentic-whatsapp logs: the live view of the agent log
-│   ├── stream.ts          # agentic-whatsapp stream: the messages Ane highlighted, and daily costs
+│   ├── stream.ts          # agentic-whatsapp stream: the messages Ane highlighted, tasks, daily costs
 │   ├── health.ts          # Failures in a row, notifications, health.json
 │   ├── notify.ts          # macOS notifications
 │   ├── agent.ts           # Routes, batches and decides, one batch at a time
@@ -796,9 +847,10 @@ agentic-whatsapp/
 │   ├── media.ts           # Downloads images and audio and has them described or transcribed
 │   ├── manage.ts          # agentic-whatsapp mcp and skills
 │   ├── settings.ts        # Edits [routing] in the config file, and reads it again when it changes
-│   ├── settings-mcp.ts    # The MCP server with the agent's own settings and costs
+│   ├── settings-mcp.ts    # The MCP server with the agent's own settings, costs and scheduled tasks
 │   ├── commands.ts        # run_cli: runs the programs [cli] allows, and its MCP server
 │   ├── hooks.ts           # Media hooks: which files set them off, the download, the prompt
+│   ├── tasks.ts           # Scheduled tasks in the database
 │   ├── command-rules.ts   # [cli] allow and deny rules
 │   └── …                  # config, templates, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables

@@ -122,7 +122,7 @@ export interface LimitState {
 }
 
 /** What a call was for. */
-export type CallPurpose = 'decision' | 'image' | 'audio' | 'hook';
+export type CallPurpose = 'decision' | 'image' | 'audio' | 'hook' | 'task';
 
 export interface CallContext {
   batchId?: number;

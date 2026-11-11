@@ -39,6 +39,24 @@ describe('LogRenderer', () => {
     ).toBe('12:00:00  ⚡ you in Amigos: @ane resume isso');
   });
 
+  it('shows scheduled tasks, what they did, and why one did not run', async () => {
+    const r = renderer();
+    expect(r.wants(entry('task scheduled', { task: 3 }))).toBe(true);
+    expect(await r.render(entry('task scheduled', { task: 3, due: '2026-11-11 09:00', chat: BOB, chatName: 'Bob' }))).toBe(
+      '12:00:00  ⏰ task 3 scheduled for 2026-11-11 09:00 · Bob',
+    );
+    expect(await r.render(entry('task', { task: 3, chat: BOB, actions: ['reply'], inputTokens: 9_400, outputTokens: 42, cost: 0.0072 }))).toBe(
+      '12:00:00  ⏰ task 3 done · Bob: reply · 9.4k → 42 tokens · $0.0072',
+    );
+    expect(await r.render(entry('task cancelled', { task: 4 }))).toBe('12:00:00  ✖ task 4 cancelled');
+    expect(await r.render(entry('task missed', { task: 5, reason: 'the agent was not running when it was due' }, 'warn'))).toBe(
+      '12:00:00  ⚠ task 5 not run: the agent was not running when it was due',
+    );
+    expect(await r.render(entry('task failed', { task: 6, chat: BOB, reason: 'quota exceeded' }, 'warn'))).toBe(
+      '12:00:00  ⚠ task 6 failed · Bob: quota exceeded',
+    );
+  });
+
   it('shows decisions and sends with the chat names it learned', async () => {
     const r = renderer();
     await r.render(entry('queued message', { chat: BOB, id: 'M1', sender: 'Bob', kind: 'message' }));

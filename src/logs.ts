@@ -45,6 +45,9 @@ const KNOWN = new Set([
   'dry run: would run a hook',
   'command',
   'dry run: would run a command',
+  'task scheduled',
+  'task cancelled',
+  'task',
 ]);
 
 /** Turns agent log entries into one readable line each, for `agentic-whatsapp logs`. */
@@ -176,6 +179,29 @@ export class LogRenderer {
         break;
       case 'dry run: would run a hook':
         body = `📝 would run ${asString(f.hook)} on a file in ${this.chatLabel(chat)}`;
+        color = paint.yellow;
+        break;
+      case 'task scheduled':
+        this.remember(f);
+        body = `⏰ task ${String(f.task ?? '?')} scheduled for ${asString(f.due)}${chat === '' ? '' : ` · ${this.chatLabel(chat)}`}`;
+        color = paint.blue;
+        break;
+      case 'task cancelled':
+        this.remember(f);
+        body = `✖ task ${String(f.task ?? '?')} cancelled${chat === '' ? '' : ` · ${this.chatLabel(chat)}`}`;
+        color = paint.dim;
+        break;
+      case 'task': {
+        this.remember(f);
+        const actions = Array.isArray(f.actions) ? f.actions.map(String) : [];
+        body = `⏰ task ${String(f.task ?? '?')} done${chat === '' ? '' : ` · ${this.chatLabel(chat)}`}: ${actions.length === 0 ? 'nothing to do' : actions.join(', ')}${this.cost(f)}`;
+        color = paint.blue;
+        break;
+      }
+      case 'task failed':
+      case 'task missed':
+        this.remember(f);
+        body = `⚠ task ${String(f.task ?? '?')} ${entry.message === 'task missed' ? 'not run' : 'failed'}${chat === '' ? '' : ` · ${this.chatLabel(chat)}`}: ${asString(f.reason)}`;
         color = paint.yellow;
         break;
       case 'message deleted': {

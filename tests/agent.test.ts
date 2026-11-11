@@ -7,6 +7,7 @@ import { MediaProcessor } from '../src/media.js';
 import { cliServer as cliServerFor } from '../src/commands.js';
 import { settingsServer as settingsServerFor } from '../src/settings-mcp.js';
 import { ConfigFile, LiveRouting } from '../src/settings.js';
+import { TaskStore } from '../src/tasks.js';
 import { configTemplate } from '../src/templates.js';
 import { ToolRegistry } from '../src/tools.js';
 import type { Action } from '../src/types.js';
@@ -305,7 +306,7 @@ describe('Agent', () => {
       [],
     ]);
     expect(decider.prompts[0]).toContain('- server "agentic-whatsapp": get_settings, find_chats, monitor_chat');
-    expect(decider.prompts[0]).toContain(', get_costs. It holds your own settings, and what you cost.');
+    expect(decider.prompts[0]).toContain(', cancel_task. It holds your own settings, what you cost, and the tasks the owner scheduled for later.');
   });
 
   it('offers the CLI server for commands the owner typed, in any chat or only the home chat', async () => {
@@ -749,6 +750,106 @@ describe('Agent', () => {
 
       const history = decider.prompts[1]?.split('<history>')[1]?.split('</history>')[0] ?? '';
       expect(history).toContain('"transcript":"Uma foto de um boleto de R$ 120,00."');
+    });
+  });
+  describe('with scheduled tasks', () => {
+    const DUE = new Date('2026-11-11T12:00:00Z'); // Wednesday 09:00 in São Paulo
+
+    async function setupTasks(actions: Action[] = [{ type: 'reply', text: 'Bob, precisa comprar suco!' }], sections: Record<string, Record<string, unknown>> = {}) {
+      const dir = await tempDir();
+      const config = makeConfig(sections, dir);
+      const wacli = new FakeWacli();
+      const decider = new FakeDecider(actions);
+      const { store, state, usage } = memoryStore(config);
+      const tasks = new TaskStore(state);
+      const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+      const log = new MemoryLogger();
+      const settingsServer = settingsServerFor(config, { dryRun: false, cli: '/x/cli.js' });
+      let now = NOW;
+      const agent = new Agent({ config, wacli, decider, state, usage, tasks, settingsServer, instructions, log, now: () => now });
+      const at = async (date: Date) => {
+        now = date;
+        agent.runDueTasks();
+        await agent.idle();
+      };
+      return { agent, wacli, decider, store, state, tasks, log, at };
+    }
+
+    it('does a task when it is due, in the chat it is about, and records what it did', async () => {
+      const { wacli, decider, store, tasks, log, at } = await setupTasks();
+      wacli.history = [{ MsgID: 'OLD1', ChatJID: BOB, Timestamp: '2026-11-10T14:00:00Z', FromMe: false, Text: 'cadê o suco?', SenderName: 'Bob' }];
+      const { id } = tasks.schedule({ dueAt: DUE, task: 'Dizer ao Bob que ele precisa comprar suco', chat: BOB, chatName: 'Bob' }, NOW);
+      await at(NOW);
+      expect(decider.prompts).toEqual([]);
+
+      await at(DUE);
+      const prompt = decider.prompts[0] ?? '';
+      expect(prompt).toContain('Current time: 2026-11-11 09:00 (America/Sao_Paulo)');
+      expect(prompt).toContain(`{"id":"${BOB}","name":"Bob","type":"direct","reply_allowed":true}`);
+      expect(prompt).toContain('cadê o suco?');
+      expect(prompt).toContain(
+        `{"id":"task-${id}","time":"2026-11-10 12:00","sender":"owner","text":"Dizer ao Bob que ele precisa comprar suco","owner_command":true,"scheduled_for":"2026-11-11 09:00"}`,
+      );
+      expect(decider.options[0]?.tools?.mcp.map((server) => server.name)).toEqual(['agentic-whatsapp']);
+      expect(wacli.sent).toEqual([{ to: BOB, text: '🤖 Ane: Bob, precisa comprar suco!' }]);
+      expect(tasks.get(id)).toMatchObject({ status: 'done', result: '→ Bob: Bob, precisa comprar suco!' });
+      expect(store.get('SELECT chat, purpose FROM calls')).toEqual({ chat: BOB, purpose: 'task' });
+      expect(log.entries.find((entry) => entry.message === 'task')?.fields).toMatchObject({ task: id, chat: BOB, chatName: 'Bob', actions: ['reply'] });
+
+      await at(new Date(DUE.getTime() + 60_000));
+      expect(decider.prompts).toHaveLength(1);
+    });
+
+    it('replies in the home chat for a task for the owner, and queues each task once', async () => {
+      const { agent, wacli, decider, tasks, at } = await setupTasks([{ type: 'reply', text: 'Lembrete: pagar o boleto' }]);
+      tasks.schedule({ dueAt: NOW, task: 'Lembrar de pagar o boleto', chat: '', chatName: '' }, NOW);
+      agent.runDueTasks();
+      await at(NOW);
+      expect(decider.prompts).toHaveLength(1);
+      expect(decider.prompts[0]).toContain(`{"id":"${HOME}","name":null,"type":"group","reply_allowed":true}`);
+      expect(decider.prompts[0]).toContain('(no earlier messages)');
+      expect(wacli.sent).toEqual([{ to: HOME, text: '🤖 Ane: Lembrete: pagar o boleto' }]);
+    });
+
+    it('skips cancelled tasks, and tells the owner about one missed while the agent was off', async () => {
+      const { wacli, decider, tasks, log, at } = await setupTasks();
+      const cancelled = tasks.schedule({ dueAt: NOW, task: 'x', chat: BOB, chatName: 'Bob' }, NOW);
+      tasks.cancel(cancelled.id, NOW);
+      const missed = tasks.schedule({ dueAt: new Date(NOW.getTime() - 13 * 3_600_000), task: 'Lembrar da reunião', chat: '', chatName: '' }, NOW);
+      await at(NOW);
+      expect(decider.prompts).toEqual([]);
+      expect(tasks.get(missed.id)).toMatchObject({ status: 'missed', error: 'the agent was not running when it was due' });
+      expect(wacli.sent).toEqual([
+        { to: HOME, text: '🤖 Ane: ⚠️ Scheduled task not run (2026-11-09 23:00): the agent was not running when it was due\nLembrar da reunião' },
+      ]);
+      expect(log.has('warn', 'task missed')).toBe(true);
+    });
+
+    it('fails a task when the model fails or a limit is reached, and tells the owner', async () => {
+      const { wacli, decider, tasks, at } = await setupTasks();
+      decider.error = new Error('quota exceeded');
+      const failed = tasks.schedule({ dueAt: NOW, task: 'Dizer ao Bob…', chat: BOB, chatName: 'Bob' }, NOW);
+      await at(NOW);
+      expect(tasks.get(failed.id)).toMatchObject({ status: 'failed', error: 'quota exceeded' });
+      expect(wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: ⚠️ Scheduled task failed (2026-11-10 12:00, Bob): quota exceeded\nDizer ao Bob…']);
+
+      const limited = await setupTasks([], { engine: { max_calls_per_day: 1 } });
+      limited.tasks.schedule({ dueAt: NOW, task: 'a', chat: '', chatName: '' }, NOW);
+      limited.tasks.schedule({ dueAt: NOW, task: 'b', chat: '', chatName: '' }, NOW);
+      await limited.at(NOW);
+      expect(limited.decider.prompts).toHaveLength(1);
+      expect(limited.tasks.get(2)).toMatchObject({ status: 'failed', error: 'a call or cost limit was reached' });
+    });
+
+    it('does not run again a task that was running when the agent stopped, and tells the owner', async () => {
+      const { agent, wacli, decider, tasks, at } = await setupTasks();
+      const { id } = tasks.schedule({ dueAt: NOW, task: 'Dizer ao Bob…', chat: BOB, chatName: 'Bob' }, NOW);
+      tasks.start(id, NOW);
+      agent.failInterruptedTasks();
+      await at(NOW);
+      expect(decider.prompts).toEqual([]);
+      expect(tasks.get(id)).toMatchObject({ status: 'failed', error: 'the agent stopped while it ran' });
+      expect(wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: ⚠️ Scheduled task failed (2026-11-10 12:00, Bob): the agent stopped while it ran\nDizer ao Bob…']);
     });
   });
 });
