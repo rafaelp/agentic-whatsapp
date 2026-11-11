@@ -11,6 +11,7 @@ import {
   decisionFromValue,
   parseDecision,
 } from './decision.js';
+import { type HookRequest, type HookRunner, hookPrompt } from './hooks.js';
 import type { MediaOptions, MediaReader, MediaRequest } from './media.js';
 import { runProcess } from './process.js';
 import { agyMcpDir, hasTools, type McpServer, type ToolSet } from './tools.js';
@@ -185,7 +186,7 @@ function userInput(content: string): string {
  * watchdog lets through just their MCP tools and reads of their files. To read an image or
  * audio file, it runs in a third, empty workspace, allowed to read that one file only.
  */
-export class AntigravityCli implements DecisionMaker, MediaReader {
+export class AntigravityCli implements DecisionMaker, MediaReader, HookRunner {
   private readonly dir: string;
   private readonly home: string;
   private synced: string | undefined;
@@ -366,7 +367,34 @@ export class AntigravityCli implements DecisionMaker, MediaReader {
     return this.toolsWorkspace;
   }
 
-  private toolGuard(tools: ToolSet): Guard {
+  /**
+   * Runs a media hook: the hook's skill, on one downloaded file, with the given MCP tools, in
+   * the tools workspace. Besides what a run with tools may do, it may read that file; its
+   * answer is plain text for the owner.
+   */
+  async runHook(request: HookRequest, options: { tools: readonly McpServer[]; onAttempt?: (attempt: Attempt) => void }): Promise<string> {
+    const tools: ToolSet = { mcp: [...options.tools], skills: [request.skill] };
+    await this.syncTools(tools);
+    const file = resolve(request.file);
+    const files = [...new Set([file, await realpath(file)])];
+    const base = toolSessionSettings(tools, this.mcpConfigFile);
+    const settings = { ...base, permissions: { ...base.permissions, allow: [...base.permissions.allow, ...files.map((path) => `read_file(${path})`)] } };
+    const settingsFile = join(this.dir, `hook-settings-${randomUUID()}.json`);
+    await writeFileAtomic(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+    const run: Run = { args: this.runArgs(settingsFile), cwd: this.toolsWorkspace, guard: this.toolGuard(tools, files) };
+    try {
+      return await this.withRetry(
+        (text, number) => this.attempt(run, userInput(text), number, options.onAttempt, mediaTextFromResult),
+        hookPrompt({ ...request, file }, tools.mcp),
+        `Use only the skill ${request.skill.name}, the MCP tools listed, and read_file on ${file}, then answer.`,
+      );
+    } finally {
+      await rm(settingsFile, { force: true });
+    }
+  }
+
+  /** `files`: files outside the workspace the run may read, by path or real path. */
+  private toolGuard(tools: ToolSet, files: readonly string[] = []): Guard {
     const servers = new Map(tools.mcp.map((server) => [server.name, server.tools]));
     const readable = [
       this.skillsDir,
@@ -382,7 +410,9 @@ export class AntigravityCli implements DecisionMaker, MediaReader {
       }
       if (tool === 'read_file') {
         const path = asString(params.Path);
-        return path !== '' && readable.some((root) => isInside(resolve(this.toolsWorkspace, path), root));
+        if (path === '') return false;
+        const target = resolve(this.toolsWorkspace, path);
+        return files.includes(target) || readable.some((root) => isInside(target, root));
       }
       return noToolGuard(tool, step);
     };

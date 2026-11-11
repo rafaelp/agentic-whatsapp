@@ -178,6 +178,11 @@ export class AgentState {
     );
   }
 
+  /** Remembers a file downloaded for a message, so storage.retention_days deletes it in time. */
+  recordMediaFile(chat: string, id: string, file: string): void {
+    this.store.run('UPDATE messages SET media_file = ? WHERE chat = ? AND id = ?', file, chat, id);
+  }
+
   /** Descriptions and transcripts of earlier messages of a chat, by message ID. */
   mediaTexts(chat: string, ids: readonly string[]): Map<string, string> {
     const texts = new Map<string, string>();

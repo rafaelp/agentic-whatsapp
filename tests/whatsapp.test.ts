@@ -60,6 +60,13 @@ describe('fromWebhookPayload', () => {
       Media: { Type: 'audio', MimeType: 'audio/ogg; codecs=opus', FileLength: 9_120 },
     });
     expect(message).toMatchObject({ text: '', mediaType: 'audio', mediaMime: 'audio/ogg; codecs=opus', mediaSize: 9_120 });
+    const document = fromWebhookPayload({
+      Chat: BOB,
+      ID: '2',
+      Timestamp: '2026-07-25T10:00:00Z',
+      Media: { Type: 'document', MimeType: 'application/pdf', Filename: 'Boleto.pdf', FileLength: 80_000 },
+    });
+    expect(document).toMatchObject({ mediaType: 'document', mediaFilename: 'Boleto.pdf' });
   });
 
   it('flags reactions', () => {

@@ -2,6 +2,7 @@ import { AntigravityCli } from './antigravity.js';
 import type { EngineConfig, EngineKind } from './config.js';
 import type { DecisionMaker } from './decision.js';
 import { GeminiCli } from './gemini.js';
+import type { HookRunner } from './hooks.js';
 import type { MediaReader } from './media.js';
 
 export interface Engine extends DecisionMaker {
@@ -13,6 +14,11 @@ export function createEngine(config: EngineConfig, stateDir: string, systemPromp
   return config.kind === 'antigravity'
     ? new AntigravityCli(config, stateDir, systemPrompt)
     : new GeminiCli(config, stateDir, systemPrompt);
+}
+
+/** The engine as a runner of media hooks, when it can be one. */
+export function hookRunnerOf(engine: Engine): HookRunner | undefined {
+  return engine instanceof AntigravityCli ? engine : undefined;
 }
 
 /** The engine as a reader of images and audio, when it can be one. */

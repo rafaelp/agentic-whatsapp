@@ -115,6 +115,30 @@ export interface CliConfig {
   timeoutSeconds: number;
 }
 
+/** Where a hook runs: the home chat, one-to-one chats, groups. */
+export type HookChat = 'home' | 'direct' | 'group';
+export type HookMedia = 'image' | 'audio' | 'video' | 'document';
+
+/**
+ * A media hook: when a file of these types arrives in these chats, the agent runs the skill on
+ * it, with its tools, and tells the owner what it did.
+ */
+export interface HookConfig {
+  name: string;
+  media: HookMedia[];
+  /** MIME types, such as "application/pdf" or "image/*"; empty: any. */
+  mime: string[];
+  chats: HookChat[];
+  /** A skill installed with `agentic-whatsapp skills add`. */
+  skill: string;
+  /** Tell the owner in the home chat what the hook did. */
+  notify: boolean;
+}
+
+const HOOK_CHATS: readonly HookChat[] = ['home', 'direct', 'group'];
+const HOOK_MEDIA: readonly HookMedia[] = ['image', 'audio', 'video', 'document'];
+const HOOK_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
 export interface Paths {
   configFile: string;
   instructionsFile: string;
@@ -143,6 +167,7 @@ export interface Config {
   storage: StorageConfig;
   media: MediaConfig;
   cli: CliConfig;
+  hooks: HookConfig[];
   paths: Paths;
 }
 
@@ -358,6 +383,32 @@ export function parseConfig(
     timeoutSeconds: cliSection.integer('timeout_seconds', 60, 1, 600),
   };
   cliSection.finish();
+
+  const hooks = root.tables('hooks').map((section, index): HookConfig => {
+    const where = `hooks[${index}]`;
+    const name = section.string('name').trim();
+    if (!HOOK_NAME.test(name)) throw new ConfigError(`${where}.name must be 1 to 64 letters, digits, "_" or "-", got ${JSON.stringify(name)}`);
+    const pick = <T extends string>(key: string, allowed: readonly T[]): T[] => {
+      const values = section.strings(key, []);
+      if (values.length === 0) throw new ConfigError(`hook ${name}: ${key} must list at least one of ${allowed.join(', ')}`);
+      for (const value of values) {
+        if (!allowed.includes(value as T)) throw new ConfigError(`hook ${name}: ${key} takes ${allowed.join(', ')}, got ${JSON.stringify(value)}`);
+      }
+      return [...new Set(values)] as T[];
+    };
+    const hook: HookConfig = {
+      name,
+      media: pick('media', HOOK_MEDIA),
+      mime: section.strings('mime', []).map((mime) => mime.toLowerCase()),
+      chats: pick('chats', HOOK_CHATS),
+      skill: section.string('skill').trim(),
+      notify: section.boolean('notify', true),
+    };
+    if (!HOOK_NAME.test(hook.skill)) throw new ConfigError(`hook ${name}: skill must be the name of an installed skill`);
+    section.finish();
+    return hook;
+  });
+  if (new Set(hooks.map((hook) => hook.name)).size !== hooks.length) throw new ConfigError('Two hooks have the same name');
   root.finish();
 
   const logDir = location.logDir ?? join(location.stateDir, 'logs');
@@ -371,6 +422,7 @@ export function parseConfig(
     storage,
     media,
     cli,
+    hooks,
     paths: {
       configFile: location.configFile,
       instructionsFile: join(dirname(location.configFile), 'instructions.md'),
@@ -402,6 +454,14 @@ class Section {
     private readonly table: Record<string, unknown>,
     private readonly path: string,
   ) {}
+
+  /** An array of tables, such as [[hooks]]; empty when absent. */
+  tables(key: string): Section[] {
+    const value = this.read(key);
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || !value.every(isRecord)) throw new ConfigError(`[[${this.label(key)}]] must be tables`);
+    return value.map((table, index) => new Section(table, `${this.label(key)}[${index}]`));
+  }
 
   section(key: string): Section {
     const value = this.read(key);

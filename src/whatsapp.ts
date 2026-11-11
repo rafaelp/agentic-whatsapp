@@ -33,6 +33,7 @@ export function fromWebhookPayload(payload: unknown): ChatMessage | null {
     mediaType: asString(media.Type),
     mediaMime: asString(media.MimeType) || undefined,
     mediaSize: typeof media.FileLength === 'number' && media.FileLength > 0 ? media.FileLength : undefined,
+    mediaFilename: asString(media.Filename) || undefined,
     forwarded: payload.IsForwarded === true,
     reaction: asString(payload.ReactionToID) !== '',
     edited: payload.Edited === true,

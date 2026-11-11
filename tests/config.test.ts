@@ -182,6 +182,21 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ agent: { name: 'Ane' }, cli: { scope: 'all' } }, location)).toThrow(/cli.scope must be "commands" or "home"/);
   });
 
+  it('reads [[hooks]], each with the media, MIME types and chats it runs on', () => {
+    const hooks = (list: Record<string, unknown>[]) => parseConfig({ agent: { name: 'Ane' }, hooks: list }, location).hooks;
+    expect(parseConfig({ agent: { name: 'Ane' } }, location).hooks).toEqual([]);
+    expect(hooks([{ name: 'save-pdfs', media: ['document'], mime: ['Application/PDF'], chats: ['home', 'direct'], skill: 'save-to-notes' }])).toEqual([
+      { name: 'save-pdfs', media: ['document'], mime: ['application/pdf'], chats: ['home', 'direct'], skill: 'save-to-notes', notify: true },
+    ]);
+    const base = { name: 'h', media: ['image'], chats: ['group'], skill: 's' };
+    expect(() => hooks([{ ...base, media: ['pdf'] }])).toThrow(/hook h: media takes image, audio, video, document/);
+    expect(() => hooks([{ ...base, chats: [] }])).toThrow(/hook h: chats must list at least one/);
+    expect(() => hooks([{ ...base, skill: '../x' }])).toThrow(/skill must be the name of an installed skill/);
+    expect(() => hooks([{ ...base, prompt: 'x' }])).toThrow(/Unknown setting in \[hooks\[0\]\]: prompt/);
+    expect(() => hooks([base, base])).toThrow(/Two hooks have the same name/);
+    expect(() => parseConfig({ agent: { name: 'Ane' }, hooks: { name: 'x' } }, location)).toThrow(/\[\[hooks\]\] must be tables/);
+  });
+
   it('validates the time zone and the home chat', () => {
     expect(() => parseConfig({ agent: { name: 'Ane', timezone: 'Mars/Base' } }, location)).toThrow(/time zone/);
     expect(() => parseConfig({ agent: { name: 'Ane', home_chat: 'Ane' } }, location)).toThrow(/JIDs/);

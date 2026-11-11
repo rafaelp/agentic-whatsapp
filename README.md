@@ -109,6 +109,9 @@ Unknown number, in a private chat:
 - **Runs the command-line programs you allow.** Any CLI: `gh`, `joplin`, your own scripts. "@ane
   make a note of this" or "@ane open an issue for this" in any chat, and Ane runs the commands you
   listed in `[cli] allow`, without a shell, and records each one. Nothing runs unless you list it.
+- **Hooks for files.** "Every PDF I send to the home chat goes to my notes": a `[[hooks]]` entry
+  picks files by type and chat, and Ane follows a skill of yours on each one, with the programs you
+  allow. Nothing in Ane knows about your notes app; the skill does.
 - **Set it up from WhatsApp.** "Follow Carol" or "monitor the Family group" in the home chat: Ane
   finds the chat, adds it to the config file, comments intact, and reads it from the next message
   on. The same goes for auto-replies, with no restart.
@@ -499,6 +502,43 @@ agentic-whatsapp mcp login gmail
 Then, in the home chat: "any email from the bank this week?" or "draft a reply to Carol's last email
 saying I'll be there".
 
+## Media hooks
+
+A hook runs one of your [skills](#skills-and-mcp-servers) on every file of a kind that arrives in
+the chats you pick, with the [programs you allow](#command-line-programs). To save every PDF you
+send to the home chat in your notes:
+
+```toml
+[[hooks]]
+name = "save-pdfs"
+media = ["document"]          # image, audio, video, document
+mime = ["application/pdf"]    # optional; "image/*" matches every image
+chats = ["home"]              # home, direct, group
+skill = "save-to-notes"       # installed with: agentic-whatsapp skills add
+```
+
+The skill says what to do with the file, for example: create a note in the "WhatsApp" notebook,
+titled after the file, and attach it with your notes app's command line. Ane downloads the file
+under its own name, runs the model with that skill, read access to that one file and `run_cli`,
+and tells you in the home chat what it did:
+
+> 📎 Boleto.pdf
+> Saved "Boleto" in the WhatsApp notebook, with the PDF attached.
+
+- **Which files.** `home` takes the files you send or forward to the home chat; `direct` and
+  `group` take the files other people send, in any chat, followed or not.
+- **No double work.** A file without a caption goes to its hooks only. With a caption, it reaches a
+  decision too, since you said something more; in the home chat the hook gets the caption as your
+  own words, such as "save it in the Bills notebook".
+- **Its own run.** The hook run gets the skill, the file, the `run_cli` tool and the MCP servers a
+  command of yours would get, and nothing else. Hooks run one at a time, in the queue of decisions,
+  and count toward the cost limits as `hook` (`costs --by purpose`).
+- **Watch it.** `logs` shows `🪝 Ane chat: save-pdfs ran on Boleto.pdf`, with its cost, and `check`
+  says whether each hook's skill is installed. `notify = false` keeps a hook quiet.
+- **Files.** Downloads go to the `media/` state folder and follow `[storage]`, like images and
+  audio, and `media.max_size_mb` applies. With `run --dry-run`, no hook runs.
+- Hooks need `engine.kind = "antigravity"`.
+
 ## Its own settings
 
 Ane also has MCP tools of its own, for the settings you would otherwise edit by hand: which people
@@ -685,6 +725,7 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `cli.deny` | `[]` | Commands it may never run, in the same form; they win over `allow`. |
 | `cli.scope` | `commands` | `commands`: on a command you type, in any chat. `home`: only in the home chat. |
 | `cli.timeout_seconds` | `60` | A command still running after this long is stopped. |
+| `[[hooks]]` | none | Media hooks: `name`, `media`, `mime` (optional), `chats`, `skill`, `notify` (`true`). See [Media hooks](#media-hooks). |
 
 ## Before you use it
 
@@ -757,6 +798,7 @@ agentic-whatsapp/
 │   ├── settings.ts        # Edits [routing] in the config file, and reads it again when it changes
 │   ├── settings-mcp.ts    # The MCP server with the agent's own settings and costs
 │   ├── commands.ts        # run_cli: runs the programs [cli] allows, and its MCP server
+│   ├── hooks.ts           # Media hooks: which files set them off, the download, the prompt
 │   ├── command-rules.ts   # [cli] allow and deny rules
 │   └── …                  # config, templates, instructions, logging and rotation
 └── tests/                 # Vitest suite, with fake wacli and agy executables

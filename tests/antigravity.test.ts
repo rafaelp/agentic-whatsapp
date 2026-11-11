@@ -1,5 +1,5 @@
 import { mkdir, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   AntigravityCli,
@@ -16,8 +16,8 @@ import {
 import { type Attempt, DECISION_SCHEMA } from '../src/decision.js';
 import { createEngine } from '../src/engine.js';
 import { GeminiCli } from '../src/gemini.js';
-import type { McpServer, ToolSet } from '../src/tools.js';
-import { fakeCommand, makeConfig, tempDir } from './helpers.js';
+import type { McpServer, Skill, ToolSet } from '../src/tools.js';
+import { message as baseMessage, fakeCommand, HOME, makeConfig, tempDir } from './helpers.js';
 
 const success = (structured: unknown) => ({
   conversation_id: 'c1',
@@ -394,6 +394,53 @@ appendFileSync(join(dir, 'settings.jsonl'), JSON.stringify(JSON.parse(readFileSy
       const attempts: Attempt[] = [];
       return { agy, attempts, decision: agy.decide('MESSAGES', { tools, onAttempt: (attempt) => attempts.push(attempt) }) };
     };
+
+    const hookRequest = async (tools: ToolSet) => {
+      const file = join(dir, 'media', 'home', 'P1', 'Boleto.pdf');
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, '%PDF');
+      const hook = { name: 'save-pdfs', media: ['document' as const], mime: [], chats: ['home' as const], skill: 'agenda', notify: true };
+      const message = { ...baseMessage(), chat: HOME, fromMe: true, mediaType: 'document', mediaMime: 'application/pdf' };
+      return { file, request: { hook, skill: tools.skills[0] as Skill, file, message, chatName: '', home: true, language: 'pt-BR', assistant: 'Ane', timezone: 'UTC' } };
+    };
+    const answer = (text: string) => ({ event: 'result', result: { status: 'SUCCESS', response: text } });
+    const keepSettings = `const at = process.argv.indexOf('--settings');
+appendFileSync(join(dir, 'settings.jsonl'), readFileSync(process.argv[at + 1], 'utf8').replace(/\\n/g, ' ') + '\\n');`;
+
+    it('runs a hook in the tools workspace, allowed to read its one file, with a plain-text answer', async () => {
+      const tools = await toolSet();
+      const { file, request } = await hookRequest(tools);
+      const command = await fakeAgy(
+        [[toolWith('read_file', 'ACTIVE', { Path: file }), toolWith(MCP_TOOL, 'ACTIVE', { ServerName: 'notes', ToolName: 'search' }), answer('Salvei.')]],
+        keepSettings,
+      );
+      const agy = new AntigravityCli(engine(command), dir, 'RULES', { home: dir });
+      await agy.prepare();
+      const attempts: Attempt[] = [];
+      expect(await agy.runHook(request, { tools: tools.mcp, onAttempt: (attempt) => attempts.push(attempt) })).toBe('Salvei.');
+      expect(attempts.map((attempt) => attempt.tools)).toEqual([['read_file', 'notes/search']]);
+
+      const [call] = await calls();
+      expect(call?.cwd).toContain(join('antigravity', 'workspace-tools'));
+      expect(call?.args).not.toContain('--json-schema');
+      expect(JSON.parse(call?.input ?? '{}').message.content).toContain(`"path":${JSON.stringify(file)}`);
+      const settings = JSON.parse((await readFile(join(dir, 'settings.jsonl'), 'utf8')).trim());
+      expect(settings.toolPermission).toBe('request-review');
+      expect(settings.permissions.allow).toEqual(expect.arrayContaining(['mcp(notes/search)', `read_file(${file})`]));
+      expect(settings.permissions.deny).toContain('command(*)');
+      expect((await readdir(join(dir, 'antigravity'))).filter((name) => name.startsWith('hook-settings-'))).toEqual([]);
+    });
+
+    it('kills a hook run that reads any other file, and retries', async () => {
+      const tools = await toolSet();
+      const { request } = await hookRequest(tools);
+      const command = await fakeAgy([[toolWith('read_file', 'ACTIVE', { Path: '/etc/passwd' }), HANG], [answer('Salvei.')]]);
+      const agy = new AntigravityCli(engine(command), dir, 'RULES', { home: dir });
+      await agy.prepare();
+      const attempts: Attempt[] = [];
+      expect(await agy.runHook(request, { tools: tools.mcp, onAttempt: (attempt) => attempts.push(attempt) })).toBe('Salvei.');
+      expect(attempts.map((attempt) => attempt.status)).toEqual(['tool', 'ok']);
+    });
 
     it('runs in their own workspace and lets the allowed ones through', async () => {
       const tools = await toolSet();

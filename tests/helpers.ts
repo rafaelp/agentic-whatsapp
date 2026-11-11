@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type Config, parseConfig } from '../src/config.js';
 import { Store } from '../src/db.js';
-import type { DecideOptions, DecisionMaker } from '../src/decision.js';
+import type { Attempt, DecideOptions, DecisionMaker } from '../src/decision.js';
+import type { HookRequest, HookRunner } from '../src/hooks.js';
+import type { McpServer } from '../src/tools.js';
 import type { MediaOptions, MediaReader, MediaRequest } from '../src/media.js';
 import type { LogFields, Logger } from '../src/log.js';
 import { AgentState } from '../src/state.js';
@@ -161,6 +163,29 @@ export class FakeReader implements MediaReader {
     });
     if (this.error !== undefined) throw this.error;
     return this.text;
+  }
+}
+
+/** Runs hooks by answering `answer`, reporting one attempt of 3,000 tokens in and 40 out. */
+export class FakeHookRunner implements HookRunner {
+  readonly requests: { request: HookRequest; tools: string[]; content: string }[] = [];
+  error: Error | undefined;
+
+  constructor(public answer = 'Salvei o arquivo nas notas.') {}
+
+  async runHook(request: HookRequest, options: { tools: readonly McpServer[]; onAttempt?: (attempt: Attempt) => void }): Promise<string> {
+    this.requests.push({ request, tools: options.tools.map((server) => server.name), content: await readFile(request.file, 'utf8') });
+    options.onAttempt?.({
+      attempt: 1,
+      startedAt: NOW,
+      durationMs: 5_000,
+      status: this.error === undefined ? 'ok' : 'failed',
+      error: this.error?.message,
+      usage: { inputTokens: 3_000, outputTokens: 40, thinkingTokens: 0, cachedTokens: 0 },
+      tools: ['agentic-whatsapp-cli/run_cli'],
+    });
+    if (this.error !== undefined) throw this.error;
+    return this.answer;
   }
 }
 

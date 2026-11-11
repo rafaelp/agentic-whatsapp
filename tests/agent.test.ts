@@ -1,4 +1,4 @@
-import { utimes, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Agent } from '../src/agent.js';
@@ -13,6 +13,7 @@ import type { Action } from '../src/types.js';
 import {
   BOB,
   FakeDecider,
+  FakeHookRunner,
   FakeReader,
   FakeWacli,
   FAMILY,
@@ -493,6 +494,102 @@ describe('Agent', () => {
     const { decider, deliver } = await setup();
     await deliver({ EventType: 'receipt', Chat: BOB, ID: 'R1' }, { EventType: 'chat_presence', Chat: BOB });
     expect(decider.prompts).toHaveLength(0);
+  });
+
+  describe('with media hooks', () => {
+    const HOOK = { name: 'save-pdfs', media: ['document'], mime: ['application/pdf'], chats: ['home', 'direct'], skill: 'save-to-notes' };
+
+    async function setupHooks(options: { hooks?: Record<string, unknown>[]; skill?: boolean; dryRun?: boolean; actions?: Action[]; sections?: Record<string, Record<string, unknown>> } = {}) {
+      const dir = await tempDir();
+      const raw = { agent: { working_reaction: '✨' }, cli: { allow: ['notes'] }, ...(options.sections ?? {}) };
+      const config = { ...makeConfig(raw, dir), hooks: (options.hooks ?? [HOOK]).map((hook) => ({ mime: [], notify: true, ...hook })) } as ReturnType<typeof makeConfig>;
+      const wacli = new FakeWacli();
+      wacli.media = '%PDF-1.7';
+      const decider = new FakeDecider(options.actions ?? []);
+      const hookRunner = new FakeHookRunner();
+      const { store, state, usage } = memoryStore(config);
+      const tools = new ToolRegistry(store, join(dir, 'skills'));
+      if (options.skill !== false) {
+        const source = join(dir, 'source', 'save-to-notes');
+        await mkdir(source, { recursive: true });
+        await writeFile(join(source, 'SKILL.md'), '---\nname: save-to-notes\ndescription: Saves files as notes.\n---\nUse notes.\n');
+        await tools.addSkill(source);
+      }
+      const cliServer = cliServerFor(config, { dryRun: false, cli: '/x/cli.js' });
+      const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+      const log = new MemoryLogger();
+      const agent = new Agent({ config, wacli, decider, state, usage, tools, cliServer, hookRunner, instructions, log, dryRun: options.dryRun, now: () => NOW });
+      const deliver = async (...payloads: Record<string, unknown>[]) => {
+        for (const item of payloads) agent.handleEvent(item);
+        agent.flushPending();
+        await agent.idle();
+      };
+      return { dir, config, wacli, decider, hookRunner, store, state, log, deliver };
+    }
+    const pdf = (overrides: Record<string, unknown> = {}) =>
+      payload({ Chat: HOME, FromMe: true, SenderJID: '', Text: '', Media: { Type: 'document', MimeType: 'application/pdf', Filename: 'Boleto.pdf', FileLength: 8 }, ...overrides });
+
+    it('runs the hook on a PDF sent to the home chat, without a decision, and tells the owner', async () => {
+      const { dir, wacli, decider, hookRunner, store, log, deliver } = await setupHooks();
+      await deliver(pdf({ ID: 'P1' }));
+      expect(decider.prompts).toHaveLength(0);
+      const file = join(dir, 'media', '120363000000000001@g_us', 'P1', 'Boleto.pdf');
+      expect(hookRunner.requests).toEqual([
+        {
+          request: expect.objectContaining({
+            file,
+            home: true,
+            chatName: '',
+            language: 'pt-BR',
+            assistant: 'Ane',
+            timezone: 'America/Sao_Paulo',
+            skill: expect.objectContaining({ name: 'save-to-notes' }),
+          }),
+          tools: ['agentic-whatsapp-cli'],
+          content: '%PDF-1.7',
+        },
+      ]);
+      expect(wacli.sent).toEqual([{ to: HOME, text: '🤖 Ane: 📎 Boleto.pdf\nSalvei o arquivo nas notas.' }]);
+      expect(wacli.reactions.map((reaction) => reaction.emoji)).toEqual(['✨', '']);
+      expect(store.get('SELECT purpose, input_tokens FROM calls')).toEqual({ purpose: 'hook', input_tokens: 3_000 });
+      expect(store.get('SELECT media_file FROM messages')?.media_file).toBe(file);
+      expect(log.entries.find((entry) => entry.message === 'hook')?.fields).toMatchObject({ hook: 'save-pdfs', file: 'Boleto.pdf' });
+    });
+
+    it('still decides on a file sent with a caption, and runs hooks on other people\'s files where asked', async () => {
+      const { decider, hookRunner, deliver } = await setupHooks({ actions: [{ type: 'notify', text: 'ok' }] });
+      await deliver(pdf({ Text: 'arquiva isso em Contas' }));
+      expect(decider.prompts).toHaveLength(1);
+      expect(hookRunner.requests).toHaveLength(1);
+      await deliver(pdf({ Chat: BOB, FromMe: false, SenderJID: BOB, PushName: 'Bob' }));
+      expect(hookRunner.requests[1]?.request).toMatchObject({ home: false, message: expect.objectContaining({ chat: BOB }) });
+      // Groups are not in this hook's chats.
+      await deliver(pdf({ Chat: FAMILY, FromMe: false, SenderJID: BOB }));
+      expect(hookRunner.requests).toHaveLength(2);
+    });
+
+    it('tells the owner when the skill is missing or the hook fails, and runs nothing in a dry run', async () => {
+      const missing = await setupHooks({ skill: false });
+      await missing.deliver(pdf());
+      expect(missing.hookRunner.requests).toEqual([]);
+      expect(missing.wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: ⚠️ Hook save-pdfs: the skill save-to-notes is not installed or is disabled.']);
+
+      const failing = await setupHooks();
+      failing.hookRunner.error = new Error('notes is not installed');
+      await failing.deliver(pdf());
+      expect(failing.wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: ⚠️ Hook save-pdfs failed on Boleto.pdf: notes is not installed']);
+
+      const dry = await setupHooks({ dryRun: true });
+      await dry.deliver(pdf());
+      expect(dry.hookRunner.requests).toEqual([]);
+      expect(dry.log.has('info', 'dry run: would run a hook')).toBe(true);
+    });
+
+    it('deletes the file afterwards when no text is kept', async () => {
+      const { dir, deliver } = await setupHooks({ sections: { storage: { save_text: false } } });
+      await deliver(pdf({ ID: 'P9' }));
+      await expect(readFile(join(dir, 'media', '120363000000000001@g_us', 'P9', 'Boleto.pdf'))).rejects.toThrow(/ENOENT/);
+    });
   });
 
   describe('with images and audio', () => {

@@ -1,7 +1,10 @@
 import { type ActionContext, executePlan, planActions } from './actions.js';
 import { Batcher } from './batcher.js';
-import type { Config, RoutingConfig } from './config.js';
+import { rm } from 'node:fs/promises';
+import { basename } from 'node:path';
+import type { Config, HookConfig, RoutingConfig } from './config.js';
 import type { Attempt, DecisionMaker } from './decision.js';
+import { downloadForHook, type HookRunner, hooksFor } from './hooks.js';
 import type { InstructionsStore } from './instructions.js';
 import type { Logger } from './log.js';
 import type { MediaKind, MediaProcessor, MediaResult } from './media.js';
@@ -45,6 +48,8 @@ export interface AgentDeps {
   settingsServer?: McpServer;
   /** The built-in server that runs the programs [cli] allows, offered for commands the owner typed. */
   cliServer?: McpServer;
+  /** Runs the media hooks of [[hooks]]; absent when the engine cannot. */
+  hookRunner?: HookRunner;
   /** [routing] as it is now in the config file; absent keeps the settings the agent started with. */
   routing?: LiveRouting;
   instructions: InstructionsStore;
@@ -111,6 +116,15 @@ export class Agent {
       sender: message.fromMe ? 'me' : message.senderName || message.sender || undefined,
       media: message.mediaType || undefined,
     };
+    const hooks = this.hooksFor(message);
+    if (hooks.length > 0) {
+      this.enqueueHooks(message, hooks);
+      // A file the hooks handle reaches a decision only with a caption, which says something more.
+      if (route.process && message.text.trim() === '') {
+        log.info('queued message', { ...fields, kind: 'hook', hooks: hooks.map((hook) => hook.name) });
+        return;
+      }
+    }
     if (this.wantsTranscript(message)) {
       // A followed chat's audio is transcribed once, for the decision; the home chat gets that text.
       if (route.process) this.forwardTranscripts.add(messageKey(message));
@@ -161,17 +175,116 @@ export class Agent {
   }
 
   private unreact(batch: Batch): void {
-    for (const message of batch.messages) {
-      const added = this.reacting.get(message.id);
-      if (added === undefined) continue;
-      this.reacting.delete(message.id);
-      const removed = added
-        .then(() => this.deps.wacli.sendReaction(message.chat, message.id, message.sender, ''))
-        .catch((error: unknown) => {
-          this.deps.log.warn('could not remove a reaction', { chat: message.chat, id: message.id, error: errorMessage(error) });
-        })
-        .finally(() => this.unreacting.delete(removed));
-      this.unreacting.add(removed);
+    for (const message of batch.messages) this.unreactMessage(message);
+  }
+
+  private unreactMessage(message: ChatMessage): void {
+    const added = this.reacting.get(message.id);
+    if (added === undefined) return;
+    this.reacting.delete(message.id);
+    const removed = added
+      .then(() => this.deps.wacli.sendReaction(message.chat, message.id, message.sender, ''))
+      .catch((error: unknown) => {
+        this.deps.log.warn('could not remove a reaction', { chat: message.chat, id: message.id, error: errorMessage(error) });
+      })
+      .finally(() => this.unreacting.delete(removed));
+    this.unreacting.add(removed);
+  }
+
+  /** The [[hooks]] this message sets off, when the engine can run them and it is recent enough. */
+  private hooksFor(message: ChatMessage): HookConfig[] {
+    const { config, hookRunner } = this.deps;
+    if (hookRunner === undefined || config.hooks.length === 0) return [];
+    const maxAge = config.routing.maxMessageAgeMinutes;
+    if (maxAge > 0 && this.now().getTime() - message.timestamp.getTime() > maxAge * 60_000) return [];
+    return hooksFor(message, config.hooks, config.agent.homeChat);
+  }
+
+  /**
+   * Runs the hooks of a file in the decision queue, since they share the tools workspace. A file
+   * sent to the home chat gets the working reaction meanwhile.
+   */
+  private enqueueHooks(message: ChatMessage, hooks: readonly HookConfig[]): void {
+    const home = message.chat === this.deps.config.agent.homeChat;
+    if (home) this.react(message);
+    this.queue = this.queue
+      .then(async () => {
+        for (const hook of hooks) await this.runHook(hook, message);
+      })
+      .catch((error: unknown) => {
+        this.deps.log.error('could not run a hook', { chat: message.chat, error: errorMessage(error) });
+      })
+      .finally(() => {
+        if (home) this.unreactMessage(message);
+      });
+  }
+
+  /** Downloads the file, runs the hook's skill on it, and tells the owner what came of it. */
+  private async runHook(hook: HookConfig, message: ChatMessage): Promise<void> {
+    const { config, state, usage, log, wacli, hookRunner } = this.deps;
+    if (hookRunner === undefined) return;
+    const home = message.chat === config.agent.homeChat;
+    const chatName = message.chatName || state.chatName(message.chat);
+    const fields = { chat: message.chat, chatName: chatName || undefined, id: message.id, hook: hook.name };
+    const tell = async (text: string) => {
+      if (!hook.notify) return;
+      const context: ActionContext = { chat: message.chat, chatName, replyAllowed: false, ownerCommand: false, messageIds: [] };
+      await this.execute([{ type: 'notify', text }], context);
+    };
+    if (this.deps.dryRun === true) {
+      log.info('dry run: would run a hook', fields);
+      return;
+    }
+    const now = this.now();
+    if (usage.callsOn(dayKey(now, config.agent.timezone)) >= config.engine.maxCallsPerDay || usage.limitReached(now) !== undefined) {
+      log.info('hook skipped', { ...fields, reason: 'a call or cost limit was reached' });
+      return;
+    }
+    const skill = this.deps.tools?.skills().find((candidate) => candidate.name === hook.skill && candidate.enabled);
+    if (skill === undefined) {
+      const reason = `the skill ${hook.skill} is not installed or is disabled`;
+      log.warn('hook skipped', { ...fields, reason });
+      await tell(`⚠️ Hook ${hook.name}: ${reason}.`);
+      return;
+    }
+    const download = await downloadForHook(message, { dir: config.paths.mediaDir, maxBytes: config.media.maxBytes, wacli });
+    if (!('file' in download)) {
+      const reason = 'skipped' in download ? download.skipped : download.error;
+      log.warn('hook skipped', { ...fields, reason });
+      await tell(`⚠️ Hook ${hook.name}: could not get the file (${reason}).`);
+      return;
+    }
+    const name = basename(download.file);
+    const tools = [...(this.deps.cliServer === undefined ? [] : [this.deps.cliServer]), ...(this.deps.tools?.forBatch(home).mcp ?? [])];
+    let cost = 0;
+    try {
+      const answer = await hookRunner.runHook(
+        {
+          hook,
+          skill,
+          file: download.file,
+          message,
+          chatName,
+          home,
+          language: config.agent.language,
+          assistant: config.agent.name,
+          timezone: config.agent.timezone,
+        },
+        {
+          tools,
+          onAttempt: (attempt) => {
+            cost += this.recordAttempt(attempt, { chat: message.chat, chatName, purpose: 'hook' });
+          },
+        },
+      );
+      log.info('hook', { ...fields, file: name, cost: roundCost(cost) });
+      await tell(`📎 ${name}\n${answer.trim()}`);
+    } catch (error) {
+      log.warn('hook failed', { ...fields, error: errorMessage(error), cost: roundCost(cost) });
+      await tell(`⚠️ Hook ${hook.name} failed on ${name}: ${errorMessage(error)}`);
+    } finally {
+      if (config.storage.saveText) state.recordMediaFile(message.chat, message.id, download.file);
+      else await rm(download.file, { force: true });
     }
   }
 

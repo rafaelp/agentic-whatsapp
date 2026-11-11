@@ -144,6 +144,18 @@ deny = []
 scope = "commands"
 # A command still running after this long is stopped.
 timeout_seconds = 60
+
+# Media hooks: when a file arrives in these chats, the agent follows a skill on it (one you
+# installed with: agentic-whatsapp skills add), with the tools above, and tells you what it
+# did. media: image, audio, video, document. mime: optional, such as "application/pdf" or
+# "image/*". chats: home (files you send to the home chat), direct, group (files other
+# people send). A file without a caption goes to the hooks only, not to a decision.
+# [[hooks]]
+# name = "save-pdfs"
+# media = ["document"]
+# mime = ["application/pdf"]
+# chats = ["home"]
+# skill = "save-to-notes"
 `;
 }
 

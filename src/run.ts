@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Agent } from './agent.js';
 import type { Config } from './config.js';
 import { Store } from './db.js';
-import { createEngine, mediaReaderOf } from './engine.js';
+import { createEngine, hookRunnerOf, mediaReaderOf } from './engine.js';
 import { Health } from './health.js';
 import { InstructionsStore } from './instructions.js';
 import { createLogger, rotateIfLarge } from './log.js';
@@ -77,6 +77,9 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   if (tools === undefined && hasEnabledTools(registry)) {
     log.warn('skills and MCP servers only work with engine.kind = "antigravity"; they are not used');
   }
+  if (tools === undefined && config.hooks.length > 0) {
+    log.warn('[[hooks]] only work with engine.kind = "antigravity"; they are not run');
+  }
   if (tools === undefined && config.cli.allow.length > 0) {
     log.warn('[cli] only works with engine.kind = "antigravity"; no command can be run');
   }
@@ -128,6 +131,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     media,
     settingsServer: tools !== undefined && config.agent.settingsTools ? settingsServer(config, { dryRun: options.dryRun }) : undefined,
     cliServer: tools !== undefined && config.cli.allow.length > 0 ? cliServer(config, { dryRun: options.dryRun }) : undefined,
+    hookRunner: tools === undefined ? undefined : hookRunnerOf(engine),
     routing: new LiveRouting({ configFile: paths.configFile, stateDir: paths.stateDir, logDir: paths.logDir }, config.routing, log),
     instructions,
     log,
@@ -192,6 +196,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     allowlistedGroups: config.routing.groupAllowlist.length,
     settingsTools: tools !== undefined && config.agent.settingsTools,
     cliRules: tools === undefined ? undefined : config.cli.allow.length || undefined,
+    hooks: tools === undefined ? undefined : config.hooks.map((hook) => hook.name),
     skills: tools?.skills().filter((skill) => skill.enabled).length,
     mcpServers: tools?.servers().filter((server) => server.enabled).length,
     media: media === undefined ? undefined : [config.media.images && 'images', config.media.audio && 'audio'].filter(Boolean),

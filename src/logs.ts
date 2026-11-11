@@ -40,6 +40,9 @@ const KNOWN = new Set([
   'daily cost',
   'settings changed',
   'message deleted',
+  'hook',
+  'hook skipped',
+  'dry run: would run a hook',
   'command',
   'dry run: would run a command',
 ]);
@@ -89,7 +92,11 @@ export class LogRenderer {
       case 'queued message': {
         this.remember(f);
         const text = await this.text(chat, asString(f.id), asString(f.media));
-        if (f.kind === 'command') {
+        if (f.kind === 'hook') {
+          const hooks = Array.isArray(f.hooks) ? f.hooks.map(String).join(', ') : 'a hook';
+          body = `📎 ${this.who(f)} in ${this.chatLabel(chat)}${text}, for ${hooks}`;
+          color = paint.magenta;
+        } else if (f.kind === 'command') {
           body = `⚡ ${this.who(f)} in ${this.chatLabel(chat)}${text}`;
           color = paint.magenta;
         } else {
@@ -155,6 +162,20 @@ export class LogRenderer {
         break;
       case 'command refused':
         body = `⛔ refused to run ${asString(f.program) || 'a command'}: ${asString(f.reason)}`;
+        color = paint.yellow;
+        break;
+      case 'hook':
+        this.remember(f);
+        body = `🪝 ${this.chatLabel(chat)}: ${asString(f.hook)} ran on ${asString(f.file) || 'a file'}${this.cost(f)}`;
+        color = paint.blue;
+        break;
+      case 'hook skipped':
+        this.remember(f);
+        body = `⚠ ${this.chatLabel(chat)}: ${asString(f.hook)} skipped, ${asString(f.reason)}`;
+        color = paint.yellow;
+        break;
+      case 'dry run: would run a hook':
+        body = `📝 would run ${asString(f.hook)} on a file in ${this.chatLabel(chat)}`;
         color = paint.yellow;
         break;
       case 'message deleted': {

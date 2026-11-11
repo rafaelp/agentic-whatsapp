@@ -17,7 +17,7 @@ import {
 export type Breakdown = 'day' | 'chat' | 'model' | 'purpose';
 export const BREAKDOWNS: readonly Breakdown[] = ['day', 'chat', 'model', 'purpose'];
 
-const PURPOSES: Record<string, string> = { decision: 'decisions', image: 'images', audio: 'audio' };
+const PURPOSES: Record<string, string> = { decision: 'decisions', image: 'images', audio: 'audio', hook: 'hooks' };
 
 export interface ReportOptions {
   /** How many days the breakdown covers, today included. */

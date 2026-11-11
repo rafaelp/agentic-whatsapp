@@ -15,6 +15,8 @@ export interface ChatMessage {
   mediaMime?: string;
   /** Size of the media in bytes, when wacli reports it. */
   mediaSize?: number;
+  /** File name of a document, as the sender named it. */
+  mediaFilename?: string;
   /** What the model read from the media: a description of an image or a transcript of audio. */
   mediaText?: string;
   /** Why the media was not read, such as "too large". */

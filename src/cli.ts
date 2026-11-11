@@ -345,6 +345,24 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
   if (!config.agent.settingsTools) report(true, 'settings', 'off: change [routing] in the config file');
   else if (config.engine.kind !== 'antigravity') note('settings', 'only engine.kind = "antigravity" lets the agent change its settings');
   else report(true, 'settings', 'on, for commands you type in the home chat');
+  if (config.hooks.length > 0) {
+    let skills: { name: string; enabled: boolean }[] = [];
+    try {
+      const store = Store.open(config.paths.database);
+      skills = new ToolRegistry(store, config.paths.skillsDir).skills();
+      store.close();
+    } catch {
+      // No database yet: every skill shows as missing.
+    }
+    for (const hook of config.hooks) {
+      const skill = skills.find((candidate) => candidate.name === hook.skill);
+      const what = `${hook.name}: ${hook.media.join('/')}${hook.mime.length === 0 ? '' : ` (${hook.mime.join(', ')})`} in ${hook.chats.join(', ')} → skill ${hook.skill}`;
+      if (config.engine.kind !== 'antigravity') note('hook', `${what}: needs engine.kind = "antigravity"`);
+      else if (skill === undefined) report(false, 'hook', `${what}: the skill is not installed (agentic-whatsapp skills add)`);
+      else if (!skill.enabled) report(false, 'hook', `${what}: the skill is disabled`);
+      else report(true, 'hook', what);
+    }
+  }
   for (const line of cliCheck(config, { path: process.env.PATH ?? '', servicePath: servicePath() })) {
     if (line.status === 'note') note('cli', line.detail);
     else report(line.status === 'ok', 'cli', line.detail);
