@@ -336,6 +336,12 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
   if (kinds.length === 0) report(true, 'media', 'off: the model sees only the type of images and audio');
   else if (config.engine.kind !== 'antigravity') note('media', 'only engine.kind = "antigravity" reads images and audio');
   else report(true, 'media', `${kinds.join(', ')}, up to ${config.media.maxBytes / 1024 / 1024} MB, in ${config.paths.mediaDir}`);
+  if (config.media.transcribe !== 'none') {
+    const chats = config.media.transcribe === 'both' ? 'every chat' : config.media.transcribe === 'direct' ? 'one-to-one chats' : 'groups';
+    const to = config.media.transcribeTo === 'both' ? 'the home chat and the stream' : config.media.transcribeTo === 'home' ? 'the home chat' : 'the stream';
+    if (config.engine.kind !== 'antigravity' || !config.media.audio) note('transcribe', 'needs engine.kind = "antigravity" and media.audio = true');
+    else report(true, 'transcribe', `every audio in ${chats}, to ${to}`);
+  }
   if (!config.agent.settingsTools) report(true, 'settings', 'off: change [routing] in the config file');
   else if (config.engine.kind !== 'antigravity') note('settings', 'only engine.kind = "antigravity" lets the agent change its settings');
   else report(true, 'settings', 'on, for commands you type in the home chat');

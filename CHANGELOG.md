@@ -58,6 +58,10 @@ Every version published to npm has a matching `v` tag and GitHub release with th
   the home chat adds one, with the `monitor_chat` tool, which follows groups too.
 - `agent.stream_deleted` (on by default): when someone deletes a message for everyone, the stream
   shows what it said, in any chat and without calling the model.
+- `media.audio_transcribe` (`none` by default, `direct`, `group` or `both`): every audio other
+  people send you is transcribed, followed chat or not, and `media.audio_transcribe_to` sends the
+  transcript to the home chat (`home`, the default), the stream (`stream`) or both. A followed
+  chat's audio is transcribed once, for the decision too.
 - Ane can answer what it costs: its `get_costs` tool gives every figure of `agentic-whatsapp costs` in
   one call, with today, this week, this month and all time, the limits, and the last days by day,
   chat, model and purpose. `costs --json` and the tool share the same code.

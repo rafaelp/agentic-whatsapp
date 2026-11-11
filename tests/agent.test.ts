@@ -496,9 +496,9 @@ describe('Agent', () => {
   });
 
   describe('with images and audio', () => {
-    async function setupMedia(actions: Action[] = []) {
+    async function setupMedia(actions: Action[] = [], sections: Parameters<typeof makeConfig>[0] = {}) {
       const dir = await tempDir();
-      const config = makeConfig({}, dir);
+      const config = makeConfig(sections, dir);
       const wacli = new FakeWacli();
       const decider = new FakeDecider(actions);
       const reader = new FakeReader();
@@ -519,7 +519,7 @@ describe('Agent', () => {
         agent.flushPending();
         await agent.idle();
       };
-      return { wacli, decider, reader, store, log, deliver };
+      return { wacli, decider, reader, store, usage, log, deliver };
     }
     const voiceNote = (overrides: Record<string, unknown> = {}) =>
       payload({ Text: '', Media: { Type: 'audio', MimeType: 'audio/ogg; codecs=opus', FileLength: 9_000 }, ...overrides });
@@ -539,6 +539,74 @@ describe('Agent', () => {
         { purpose: 'decision', input: 1_000 },
       ]);
       expect(log.entries.find((entry) => entry.message === 'media read')?.fields).toMatchObject({ kind: 'audio', inputTokens: 2_000 });
+    });
+
+    describe('audio_transcribe', () => {
+      const unfollowed = (transcribe: string, extra: Record<string, Record<string, unknown>> = {}) =>
+        setupMedia([], { routing: { direct_messages: false, group_allowlist: [] }, media: { audio_transcribe: transcribe }, ...extra });
+
+      it('sends the transcript of audio from a chat nobody follows to the home chat, without a decision', async () => {
+        const { wacli, decider, reader, store, deliver } = await unfollowed('both');
+        reader.text = 'Chego em dez minutos.';
+        await deliver(voiceNote({ ChatName: 'Bob', PushName: 'Bob' }));
+        await deliver(voiceNote({ Chat: FAMILY, ChatName: 'Família', SenderJID: '5521999990002@s.whatsapp.net', PushName: 'Carol' }));
+        expect(decider.prompts).toHaveLength(0);
+        expect(wacli.sent).toEqual([
+          { to: HOME, text: '🤖 Ane: 🎤 Bob\nChego em dez minutos.' },
+          { to: HOME, text: '🤖 Ane: 🎤 Família · Carol\nChego em dez minutos.' },
+        ]);
+        expect(store.all('SELECT purpose FROM calls')).toEqual([{ purpose: 'audio' }, { purpose: 'audio' }]);
+        expect(store.get("SELECT media_text FROM messages WHERE chat = ?", BOB)?.media_text).toBe('Chego em dez minutos.');
+      });
+
+      it('picks one-to-one chats, groups, both or none', async () => {
+        const direct = await unfollowed('direct');
+        await direct.deliver(voiceNote(), voiceNote({ Chat: FAMILY, SenderJID: BOB }));
+        expect(direct.wacli.sent.map((sent) => sent.text)).toEqual([expect.stringContaining('🎤 Bob')]);
+        const group = await unfollowed('group');
+        await group.deliver(voiceNote(), voiceNote({ Chat: FAMILY, SenderJID: BOB }));
+        expect(group.wacli.sent.map((sent) => sent.text)).toEqual([expect.stringContaining('🎤 120363000000000002 · Bob')]);
+        const none = await unfollowed('none');
+        await none.deliver(voiceNote());
+        expect(none.reader.requests).toEqual([]);
+      });
+
+      it('puts the transcript in the stream instead of the home chat, or in both', async () => {
+        const stream = await unfollowed('both', { media: { audio_transcribe: 'both', audio_transcribe_to: 'stream' } });
+        stream.reader.text = 'Chego em dez minutos.';
+        await stream.deliver(voiceNote({ ID: 'V1', ChatName: 'Bob' }));
+        expect(stream.wacli.sent).toEqual([]);
+        const entries = stream.store.all("SELECT kind, chat, chat_name, message_ids, data FROM highlights");
+        expect(entries).toEqual([{ kind: 'transcript', chat: BOB, chat_name: 'Bob', message_ids: '["V1"]', data: null }]);
+
+        const both = await unfollowed('both', { media: { audio_transcribe: 'both', audio_transcribe_to: 'both' } });
+        await both.deliver(voiceNote({ Media: { Type: 'audio', MimeType: 'audio/ogg', FileLength: 50 * 1024 * 1024 } }));
+        expect(both.wacli.sent).toHaveLength(1);
+        expect(both.store.get('SELECT data FROM highlights')?.data).toBe('{"note":"too large"}');
+      });
+
+      it('transcribes the audio of a followed chat once, for the decision and the home chat', async () => {
+        const { wacli, decider, reader, deliver } = await setupMedia([], { media: { audio_transcribe: 'group' } });
+        reader.text = 'Jantar às oito.';
+        await deliver(voiceNote({ Chat: FAMILY, ChatName: 'Família', PushName: 'Carol' }));
+        expect(reader.requests).toHaveLength(1);
+        expect(decider.prompts[0]).toContain('"transcript":"Jantar às oito."');
+        expect(wacli.sent).toEqual([{ to: HOME, text: '🤖 Ane: 🎤 Família · Carol\nJantar às oito.' }]);
+      });
+
+      it('leaves out the owner\'s audio, old audio, and audio past a limit, and says when one cannot be read', async () => {
+        const { wacli, reader, deliver } = await unfollowed('both');
+        await deliver(voiceNote({ FromMe: true, Text: '' }));
+        await deliver(voiceNote({ Timestamp: new Date(NOW.getTime() - 2 * 3_600_000).toISOString() }));
+        expect(reader.requests).toEqual([]);
+        await deliver(voiceNote({ Media: { Type: 'audio', MimeType: 'audio/ogg', FileLength: 50 * 1024 * 1024 } }));
+        expect(wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: 🎤 Bob: audio not transcribed (too large)']);
+
+        const limited = await unfollowed('both', { costs: { max_per_day: 0.0001 } });
+        await limited.deliver(voiceNote());
+        await limited.deliver(voiceNote());
+        expect(limited.reader.requests).toHaveLength(1);
+      });
     });
 
     it('describes an image and stores the description and the file', async () => {

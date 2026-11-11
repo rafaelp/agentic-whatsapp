@@ -109,6 +109,22 @@ describe('HighlightRenderer, deleted messages', () => {
   });
 });
 
+describe('HighlightRenderer, transcripts', () => {
+  const transcript = (overrides: Partial<Highlight> = {}) => highlight({ kind: 'transcript', text: '', ...overrides });
+
+  it('shows what an audio said, or why it was not transcribed', async () => {
+    expect(await renderer().render(transcript(), [stored({ media: 'audio', text: '', mediaText: 'Chego em dez minutos.' })])).toEqual([
+      '12:00:00  🎤 Família · Carol',
+      '          Chego em dez minutos.',
+    ]);
+    expect(await renderer().render(transcript({ chat: BOB, chatName: 'Bob', note: 'too large' }), [stored({ media: 'audio', text: '' })])).toEqual([
+      '12:00:00  🎤 Bob',
+      '          (not transcribed: too large)',
+    ]);
+    expect(await renderer(false).render(transcript(), [stored({ mediaText: 'oi' })])).toEqual(['12:00:00  🎤 Família · Carol']);
+  });
+});
+
 describe('stream', () => {
   it('prints recent highlights, then new ones as they are recorded', async () => {
     const dir = await tempDir();

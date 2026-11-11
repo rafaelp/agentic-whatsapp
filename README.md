@@ -384,6 +384,8 @@ Highlights from Ane · Ctrl+C to stop
   car". The model decides, message by message, following your instructions.
 - Only messages that reach the model can be highlighted, so the chat must be followed: ask "follow
   Carol" in the home chat. Voice notes show their transcript, images their description.
+- With `media.audio_transcribe_to = "stream"` (or `"both"`), the stream shows the transcript of
+  every audio `media.audio_transcribe` picks up. See [Images and audio](#images-and-audio).
 - When someone deletes a message for everyone, the stream shows what it said, in any chat, followed
   or not, without calling the model (`agent.stream_deleted`). It needs the text the database kept
   when the message arrived, so with `storage.save_text = false` it only says who deleted one.
@@ -605,6 +607,13 @@ history.
 
 - **Voice commands.** A voice note you record in the home chat is a command, like a typed one. A
   transcript of anyone else's audio, and anything written inside an image, is data, never an order.
+- **Every audio, written down.** `media.audio_transcribe` transcribes every audio other people send
+  you, in one-to-one chats (`"direct"`), groups (`"group"`) or both (`"both"`), whether Ane follows
+  the chat or not, and `media.audio_transcribe_to` sends the transcript to the home chat
+  (`"home"`), to `agentic-whatsapp stream` (`"stream"`) or to both. No decision is made about it, so
+  a chat nobody follows costs only the transcription; in a followed chat, the audio is transcribed
+  once, for both. Audio older than `routing.max_message_age_minutes`, and audio past a call or cost
+  limit, is left out.
 - **A run of its own.** Each file is read in a separate agy run that gets only that file and the
   request to describe or transcribe it: no rules, no messages, no tools but reading that one file.
   The watchdog kills the run if it reaches for anything else.
@@ -670,6 +679,8 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `media.images` | `true` | Describe the images of messages that reach the model. |
 | `media.audio` | `true` | Transcribe their audio and voice notes. |
 | `media.max_size_mb` | `20` | Larger files are not downloaded. |
+| `media.audio_transcribe` | `none` | Transcribe every audio other people send: `none`, `direct` (one-to-one chats), `group` or `both`, followed or not. Each one is a model call. |
+| `media.audio_transcribe_to` | `home` | Where those transcripts go: `home` (the home chat), `stream` or `both`. |
 | `cli.allow` | `[]` | Commands Ane may run: a program, by name or full path, then the words a command must start with. See [Command-line programs](#command-line-programs). |
 | `cli.deny` | `[]` | Commands it may never run, in the same form; they win over `allow`. |
 | `cli.scope` | `commands` | `commands`: on a command you type, in any chat. `home`: only in the home chat. |

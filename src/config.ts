@@ -92,7 +92,19 @@ export interface MediaConfig {
   audio: boolean;
   /** Larger files are not downloaded. */
   maxBytes: number;
+  /**
+   * Transcribe every audio other people send in these chats, followed or not, and send the
+   * transcript to the home chat.
+   */
+  transcribe: AudioTranscribe;
+  /** Where those transcripts go: the home chat, the stream, or both. */
+  transcribeTo: TranscriptDestination;
 }
+
+export type AudioTranscribe = 'none' | 'direct' | 'group' | 'both';
+const AUDIO_TRANSCRIBE: readonly AudioTranscribe[] = ['none', 'direct', 'group', 'both'];
+export type TranscriptDestination = 'home' | 'stream' | 'both';
+const TRANSCRIPT_DESTINATIONS: readonly TranscriptDestination[] = ['home', 'stream', 'both'];
 
 /** Command-line programs the agent may run for the owner, through its run_cli tool. */
 export interface CliConfig {
@@ -317,7 +329,15 @@ export function parseConfig(
     images: mediaSection.boolean('images', true),
     audio: mediaSection.boolean('audio', true),
     maxBytes: mediaSection.integer('max_size_mb', 20, 1, 100) * 1024 * 1024,
+    transcribe: mediaSection.string('audio_transcribe', 'none').trim() as AudioTranscribe,
+    transcribeTo: mediaSection.string('audio_transcribe_to', 'home').trim() as TranscriptDestination,
   };
+  if (!AUDIO_TRANSCRIBE.includes(media.transcribe)) {
+    throw new ConfigError(`media.audio_transcribe must be "none", "direct", "group" or "both", got ${JSON.stringify(media.transcribe)}`);
+  }
+  if (!TRANSCRIPT_DESTINATIONS.includes(media.transcribeTo)) {
+    throw new ConfigError(`media.audio_transcribe_to must be "home", "stream" or "both", got ${JSON.stringify(media.transcribeTo)}`);
+  }
   mediaSection.finish();
 
   const cliSection = root.section('cli');

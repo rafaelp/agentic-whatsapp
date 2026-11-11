@@ -38,7 +38,9 @@ export interface DailyCost {
 export interface Highlight extends HighlightRecord {
   id: number;
   at: Date;
-  kind: 'messages' | 'daily_cost' | 'deleted';
+  kind: 'messages' | 'daily_cost' | 'deleted' | 'transcript';
+  /** Why an audio of a transcript entry could not be transcribed. */
+  note?: string;
   dailyCost?: DailyCost;
 }
 
@@ -210,6 +212,21 @@ export class AgentState {
       record.chat,
       record.chatName,
       JSON.stringify([record.id]),
+    ).id;
+  }
+
+  /**
+   * Puts the transcript of an audio in the stream (media.audio_transcribe_to). The text is the
+   * message's own, in the messages table; `note` says why there is none.
+   */
+  recordTranscript(record: { chat: string; chatName: string; id: string; note?: string }, at: Date = new Date()): number {
+    return this.store.run(
+      "INSERT INTO highlights (at, chat, chat_name, message_ids, kind, data) VALUES (?, ?, ?, ?, 'transcript', ?)",
+      at.toISOString(),
+      record.chat,
+      record.chatName,
+      JSON.stringify([record.id]),
+      record.note === undefined ? undefined : JSON.stringify({ note: record.note }),
     ).id;
   }
 
@@ -416,8 +433,14 @@ function highlightOf(row: Row): Highlight {
     text: text(row.text),
     ...(text(row.kind) === 'daily_cost'
       ? { kind: 'daily_cost', dailyCost: dailyCostOf(json<Record<string, unknown>>(row.data, {})) }
-      : { kind: text(row.kind) === 'deleted' ? 'deleted' : 'messages' }),
+      : text(row.kind) === 'transcript'
+        ? { kind: 'transcript', ...noteOf(json<Record<string, unknown>>(row.data, {})) }
+        : { kind: text(row.kind) === 'deleted' ? 'deleted' : 'messages' }),
   };
+}
+
+function noteOf(data: Record<string, unknown>): { note?: string } {
+  return typeof data.note === 'string' && data.note !== '' ? { note: data.note } : {};
 }
 
 function dailyCostOf(data: Record<string, unknown>): DailyCost {

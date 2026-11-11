@@ -230,6 +230,16 @@ describe('AgentState', () => {
     expect(state.highlightsAfter(0)).toEqual([{ id, at: NOW, chat: FAMILY, chatName: 'Família', ids: ['D1'], text: '', kind: 'deleted' }]);
   });
 
+  it('puts transcripts in the stream, with why one is missing', () => {
+    const state = new AgentState(Store.open(null));
+    const done = state.recordTranscript({ chat: BOB, chatName: 'Bob', id: 'V1' }, NOW);
+    const missing = state.recordTranscript({ chat: BOB, chatName: 'Bob', id: 'V2', note: 'too large' }, NOW);
+    expect(state.highlightsAfter(0)).toEqual([
+      { id: done, at: NOW, chat: BOB, chatName: 'Bob', ids: ['V1'], text: '', kind: 'transcript' },
+      { id: missing, at: NOW, chat: BOB, chatName: 'Bob', ids: ['V2'], text: '', kind: 'transcript', note: 'too large' },
+    ]);
+  });
+
   it('keeps the reason of a highlight only while texts are kept', () => {
     const state = new AgentState(Store.open(null), { saveText: false });
     state.recordHighlight({ chat: BOB, chatName: 'Bob', ids: ['M1'], text: 'boleto' }, NOW);

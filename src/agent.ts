@@ -4,7 +4,7 @@ import type { Config, RoutingConfig } from './config.js';
 import type { Attempt, DecisionMaker } from './decision.js';
 import type { InstructionsStore } from './instructions.js';
 import type { Logger } from './log.js';
-import type { MediaKind, MediaProcessor } from './media.js';
+import type { MediaKind, MediaProcessor, MediaResult } from './media.js';
 import { buildPrompt } from './prompt.js';
 import { type RoutingRules, routeMessage } from './router.js';
 import type { AgentState } from './state.js';
@@ -65,6 +65,10 @@ export class Agent {
   private readonly reacting = new Map<string, Promise<void>>();
   /** Reactions still being removed, for idle(). */
   private readonly unreacting = new Set<Promise<void>>();
+  /** Audio of followed chats whose transcript also goes to the home chat, by chat and ID. */
+  private readonly forwardTranscripts = new Set<string>();
+  /** Audio of chats nobody follows, transcribed one at a time for the home chat. */
+  private transcriptions: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: AgentDeps) {
     const { routing } = deps.config;
@@ -107,6 +111,11 @@ export class Agent {
       sender: message.fromMe ? 'me' : message.senderName || message.sender || undefined,
       media: message.mediaType || undefined,
     };
+    if (this.wantsTranscript(message)) {
+      // A followed chat's audio is transcribed once, for the decision; the home chat gets that text.
+      if (route.process) this.forwardTranscripts.add(messageKey(message));
+      else this.transcribeForOwner(message);
+    }
     if (!route.process) {
       log.debug('skipped message', { ...fields, reason: route.reason });
       return;
@@ -176,9 +185,10 @@ export class Agent {
     return this.batcher.clear();
   }
 
-  /** Resolves when every queued batch has been processed, and its reactions removed. */
+  /** Resolves when every queued batch and transcription has been processed, and reactions removed. */
   async idle(): Promise<void> {
     await this.queue;
+    await this.transcriptions;
     await Promise.all([...this.unreacting]);
   }
 
@@ -188,6 +198,7 @@ export class Agent {
       await this.decideBatch(batch);
     } finally {
       this.unreact(batch);
+      for (const message of batch.messages) this.forwardTranscripts.delete(messageKey(message));
     }
   }
 
@@ -396,6 +407,7 @@ export class Agent {
       } catch (error) {
         log.error('could not store a description or transcript', { chat: message.chat, error: errorMessage(error) });
       }
+      if (this.forwardTranscripts.delete(messageKey(message))) await this.sendTranscript(message, result);
       const fields = { chat: batch.chat, chatName: batch.chatName || undefined, id: message.id, kind };
       if (result.text !== undefined) {
         log.info('media read', {
@@ -414,6 +426,85 @@ export class Agent {
       }
     });
     return { ...batch, messages: batch.messages.map((message) => ({ ...message, ...found.get(message.id) })) };
+  }
+
+  /**
+   * Whether media.audio_transcribe asks for this message's transcript in the home chat: audio
+   * someone else sent, in a chat of the chosen kind, recent enough, and readable.
+   */
+  private wantsTranscript(message: ChatMessage): boolean {
+    const { config, media } = this.deps;
+    const mode = config.media.transcribe;
+    if (mode === 'none' || media === undefined || message.fromMe || message.chat === config.agent.homeChat) return false;
+    const kind = chatKind(message.chat);
+    if (kind === 'other' || (mode !== 'both' && mode !== kind)) return false;
+    const maxAge = config.routing.maxMessageAgeMinutes;
+    if (maxAge > 0 && this.now().getTime() - message.timestamp.getTime() > maxAge * 60_000) return false;
+    return media.kindOf(message) === 'audio';
+  }
+
+  /** Transcribes the audio of a chat nobody follows, for the home chat only: no decision is made. */
+  private transcribeForOwner(message: ChatMessage): void {
+    this.transcriptions = this.transcriptions
+      .then(() => this.transcribeAlone(message))
+      .catch((error: unknown) => {
+        this.deps.log.error('could not transcribe an audio for the home chat', { chat: message.chat, error: errorMessage(error) });
+      });
+  }
+
+  private async transcribeAlone(message: ChatMessage): Promise<void> {
+    const { config, media, state, usage, log } = this.deps;
+    if (media === undefined) return;
+    const now = this.now();
+    const fields = { chat: message.chat, chatName: message.chatName || undefined, id: message.id, kind: 'audio' };
+    if (usage.callsOn(dayKey(now, config.agent.timezone)) >= config.engine.maxCallsPerDay || usage.limitReached(now) !== undefined) {
+      log.info('media not read', { ...fields, reason: 'a call or cost limit was reached' });
+      return;
+    }
+    const call: CallContext = { chat: message.chat, chatName: message.chatName, purpose: 'audio' };
+    let cost = 0;
+    let tokens = NO_USAGE;
+    const result = await media.read(message, {
+      onAttempt: (attempt) => {
+        cost += this.recordAttempt(attempt, call);
+        tokens = addUsage(tokens, attempt.usage);
+      },
+    });
+    if (result === undefined) return;
+    state.recordMedia(message.chat, message.id, result);
+    if (result.text !== undefined) {
+      log.info('media read', { ...fields, inputTokens: tokens.inputTokens, outputTokens: tokens.outputTokens, cost: roundCost(cost) });
+    } else if (result.skipped !== undefined) {
+      log.info('media not read', { ...fields, reason: result.skipped });
+    } else {
+      log.warn('could not read media', { ...fields, error: result.error, cost: roundCost(cost) });
+    }
+    await this.sendTranscript(message, result);
+  }
+
+  /**
+   * Sends a transcript where media.audio_transcribe_to says: "🎤 Família · Carol", then what she
+   * said, to the home chat, and an entry in the stream.
+   */
+  private async sendTranscript(message: ChatMessage, result: MediaResult): Promise<void> {
+    const { config, state, log } = this.deps;
+    const to = config.media.transcribeTo;
+    const chatName = message.chatName || state.chatName(message.chat);
+    const note = result.text === undefined ? (result.skipped ?? result.error ?? 'unknown error') : undefined;
+    if (to === 'stream' || to === 'both') {
+      try {
+        state.recordTranscript({ chat: message.chat, chatName, id: message.id, note }, this.now());
+      } catch (error) {
+        log.error('could not put a transcript in the stream', { chat: message.chat, error: errorMessage(error) });
+      }
+    }
+    if (to === 'home' || to === 'both') {
+      const who = message.senderName || message.sender.split('@')[0] || 'someone';
+      const label = chatKind(message.chat) === 'group' ? `${chatName || message.chat.split('@')[0]} · ${who}` : chatName || who;
+      const text = note === undefined ? `🎤 ${label}\n${result.text ?? ''}` : `🎤 ${label}: audio not transcribed (${note})`;
+      const context: ActionContext = { chat: message.chat, chatName, replyAllowed: false, ownerCommand: false, messageIds: [] };
+      await this.execute([{ type: 'notify', text }], context);
+    }
   }
 
   /** Tells the owner, once per period, that a cost limit is nearly used up. */
@@ -437,7 +528,7 @@ export class Agent {
       });
   }
 
-  private async execute(actions: Action[], context: ActionContext, batchId: number): Promise<void> {
+  private async execute(actions: Action[], context: ActionContext, batchId?: number): Promise<void> {
     const { config, wacli, state, instructions, log } = this.deps;
     await executePlan(planActions(actions, context, config.agent.homeChat), {
       wacli,
@@ -488,6 +579,11 @@ export class Agent {
   private now(): Date {
     return this.deps.now?.() ?? new Date();
   }
+}
+
+/** A message's chat and ID, which together identify it. */
+function messageKey(message: Pick<ChatMessage, 'chat' | 'id'>): string {
+  return `${message.chat}/${message.id}`;
 }
 
 /** Runs `fn` over `items`, at most `limit` at a time. */

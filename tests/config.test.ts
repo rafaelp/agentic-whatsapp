@@ -23,6 +23,11 @@ describe('parseConfig', () => {
     expect(config.cli).toEqual({ allow: [], deny: [], scope: 'commands', timeoutSeconds: 60 });
     expect(config.agent.workingReaction).toBe('✨');
     expect(config.agent.streamDeleted).toBe(true);
+    expect(config.media.transcribe).toBe('none');
+    expect(parseConfig({ agent: { name: 'Ane' }, media: { audio_transcribe: 'both' } }, location).media.transcribe).toBe('both');
+    expect(() => parseConfig({ agent: { name: 'Ane' }, media: { audio_transcribe: 'all' } }, location)).toThrow(
+      /media.audio_transcribe must be "none", "direct", "group" or "both"/,
+    );
     expect(parseConfig({ agent: { name: 'Ane', working_reaction: '' } }, location).agent.workingReaction).toBe('');
     expect(config.routing).toEqual({
       directMessages: false,
@@ -147,10 +152,14 @@ describe('parseConfig', () => {
 
   it('reads images and audio by default, up to 20 MB', () => {
     const defaults = parseConfig({ agent: { name: 'Ane' } }, location);
-    expect(defaults.media).toEqual({ images: true, audio: true, maxBytes: 20 * 1024 * 1024 });
+    expect(defaults.media).toEqual({ images: true, audio: true, maxBytes: 20 * 1024 * 1024, transcribe: 'none', transcribeTo: 'home' });
     expect(defaults.paths.mediaDir).toBe('/home/me/.local/state/aw/media');
     const off = parseConfig({ agent: { name: 'Ane' }, media: { images: false, audio: false, max_size_mb: 5 } }, location);
-    expect(off.media).toEqual({ images: false, audio: false, maxBytes: 5 * 1024 * 1024 });
+    expect(off.media).toMatchObject({ images: false, audio: false, maxBytes: 5 * 1024 * 1024 });
+    expect(parseConfig({ agent: { name: 'Ane' }, media: { audio_transcribe_to: 'both' } }, location).media.transcribeTo).toBe('both');
+    expect(() => parseConfig({ agent: { name: 'Ane' }, media: { audio_transcribe_to: 'email' } }, location)).toThrow(
+      /media.audio_transcribe_to must be "home", "stream" or "both"/,
+    );
     expect(() => parseConfig({ agent: { name: 'Ane' }, media: { max_size_mb: 0 } }, location)).toThrow(/media.max_size_mb/);
     expect(() => parseConfig({ agent: { name: 'Ane' }, media: { video: true } }, location)).toThrow(/Unknown setting in \[media\]/);
   });

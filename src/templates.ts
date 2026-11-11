@@ -121,6 +121,13 @@ images = true
 audio = true
 # Larger files are not downloaded.
 max_size_mb = 20
+# Transcribe every audio other people send you and send the transcript to the home chat,
+# whether the agent follows the chat or not: "none", "direct" (one-to-one chats), "group"
+# or "both". Each audio is a model call.
+audio_transcribe = "none"
+# Where those transcripts go: "home" (the home chat), "stream" (agentic-whatsapp stream)
+# or "both".
+audio_transcribe_to = "home"
 
 [cli]
 # Command-line programs the agent may run for your commands, any program you choose, with

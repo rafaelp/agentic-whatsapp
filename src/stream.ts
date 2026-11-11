@@ -50,6 +50,7 @@ export class HighlightRenderer {
       dayKey(highlight.at, zone) === dayKey(this.now(), zone) ? formatClock(highlight.at, zone) : formatLocalTime(highlight.at, zone);
     if (highlight.kind === 'daily_cost') return [`${paint.dim(time)}  ${this.costLine(highlight.dailyCost)}`];
     if (highlight.kind === 'deleted') return this.deleted(time, highlight, messages[0]);
+    if (highlight.kind === 'transcript') return this.transcript(time, highlight, messages[0]);
     const lines = [`${paint.dim(time)}  ${paint.bold(paint.magenta(`★ ${this.chatLabel(highlight, messages)}`))}`];
     for (const message of messages) {
       const who = message.fromMe ? 'you' : message.senderName || message.sender.split('@')[0] || 'someone';
@@ -82,6 +83,20 @@ export class HighlightRenderer {
     let text = message.text;
     if (text === '' && message.mediaText === '') text = (await this.lookup(chat, message.id)) ?? '';
     return describe({ ...message, text });
+  }
+
+  /** "🎤 Família · Carol", then what the audio said, or why it was not transcribed. */
+  private transcript(time: string, highlight: Highlight, message: StoredText | undefined): string[] {
+    const { paint } = this;
+    const who = message === undefined ? 'someone' : message.senderName || message.sender.split('@')[0] || 'someone';
+    const label = this.chatLabel(highlight, message === undefined ? [] : [message]);
+    const where = chatKind(highlight.chat) === 'group' ? `${label} · ${who}` : label;
+    const lines = [`${paint.dim(time)}  ${paint.bold(paint.blue(`🎤 ${where}`))}`];
+    if (this.options.text) {
+      const said = message === undefined ? '' : oneLine(message.mediaText);
+      lines.push(`${INDENT}${said !== '' ? said : paint.dim(`(not transcribed${highlight.note === undefined ? '' : `: ${highlight.note}`})`)}`);
+    }
+    return lines;
   }
 
   /**
