@@ -26,6 +26,9 @@ timezone = ${quote(options.timezone)}
 home_chat = ${quote(options.homeChat)}
 # Prepended to every message the agent sends.
 # message_prefix = ${quote(`🤖 ${options.name}: `)}
+# Reaction the agent puts on your commands while it works on them, removed once it is
+# done. "" turns it off.
+working_reaction = "✨"
 # Let the agent change [routing] when you ask in the home chat, such as
 # "monitor the Family group" (Antigravity only).
 settings_tools = true

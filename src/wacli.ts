@@ -12,6 +12,8 @@ export interface WacliClient {
   listMessages(chat: string, limit: number): Promise<StoredMessage[]>;
   /** Downloads the media of a stored message to `output` and returns its size in bytes. */
   downloadMedia(chat: string, id: string, output: string): Promise<DownloadedMedia>;
+  /** Reacts to a message with an emoji; an empty one removes the reaction. `sender` is needed in groups. */
+  sendReaction(chat: string, id: string, sender: string, emoji: string): Promise<void>;
 }
 
 export interface DownloadedMedia {
@@ -46,6 +48,11 @@ export class Wacli implements WacliClient {
     // "--flag=value" keeps text that starts with "-" from being read as a flag.
     const data = await this.json(['send', 'text', `--to=${to}`, `--message=${text}`, '--no-preview'], 120_000);
     return isRecord(data) && typeof data.id === 'string' && data.id !== '' ? data.id : undefined;
+  }
+
+  async sendReaction(chat: string, id: string, sender: string, emoji: string): Promise<void> {
+    const group = chat.endsWith('@g.us') && sender !== '' ? [`--sender=${sender}`] : [];
+    await this.json(['send', 'react', `--to=${chat}`, `--id=${id}`, ...group, `--reaction=${emoji}`], 60_000);
   }
 
   async listMessages(chat: string, limit: number): Promise<StoredMessage[]> {

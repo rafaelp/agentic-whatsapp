@@ -14,6 +14,8 @@ export interface AgentConfig {
   messagePrefix: string;
   /** Lets the agent change [routing] when the owner asks in the home chat (Antigravity only). */
   settingsTools: boolean;
+  /** Reaction put on the owner's commands while the agent works on them; empty: none. */
+  workingReaction: string;
 }
 
 export interface RoutingConfig {
@@ -213,6 +215,7 @@ export function parseConfig(
     homeChat,
     messagePrefix: agentSection.string('message_prefix', defaultMessagePrefix(name)),
     settingsTools: agentSection.boolean('settings_tools', true),
+    workingReaction: agentSection.string('working_reaction', '✨').trim(),
   };
   agentSection.finish();
 

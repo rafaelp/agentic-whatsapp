@@ -109,6 +109,23 @@ process.stdout.write(process.env.FAKE_STDOUT + '\\n');`,
     await expect(new Wacli(broken.command, '').chat(BOB)).rejects.toThrow(/store locked/);
   });
 
+  it('reacts to a message, with the sender in groups, and removes a reaction with an empty one', async () => {
+    const fake = await recordingWacli('{"success":true,"data":{"sent":true},"error":null}');
+    const wacli = new Wacli(fake.command, '');
+    await wacli.sendReaction('120363000000000001@g.us', 'C1', '5521999990009@s.whatsapp.net', '✨');
+    expect(await fake.args()).toEqual([
+      'send',
+      'react',
+      '--to=120363000000000001@g.us',
+      '--id=C1',
+      '--sender=5521999990009@s.whatsapp.net',
+      '--reaction=✨',
+      '--json',
+    ]);
+    await wacli.sendReaction(BOB, 'D1', BOB, '');
+    expect(await fake.args()).toEqual(['send', 'react', `--to=${BOB}`, '--id=D1', '--reaction=', '--json']);
+  });
+
   it('raises the error wacli reports', async () => {
     const fake = await recordingWacli('{"success":false,"data":null,"error":"recipient not found"}');
     await expect(new Wacli(fake.command, '').sendText(BOB, 'oi')).rejects.toThrow(/recipient not found/);

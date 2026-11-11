@@ -417,6 +417,51 @@ describe('Agent', () => {
     expect(log.entries.filter((entry) => entry.message === 'daily cost')).toHaveLength(1);
   });
 
+  it('reacts to the owner\'s commands while it works on them, and takes the reaction off after', async () => {
+    const { wacli, decider, deliver } = await setup([{ type: 'notify', text: 'feito' }]);
+    await deliver(payload({ Chat: HOME, ID: 'C1', FromMe: true, SenderJID: '5521999990009@s.whatsapp.net', Text: 'resuma o dia' }));
+    expect(wacli.reactions).toEqual([
+      { chat: HOME, id: 'C1', sender: '5521999990009@s.whatsapp.net', emoji: '✨' },
+      { chat: HOME, id: 'C1', sender: '5521999990009@s.whatsapp.net', emoji: '' },
+    ]);
+    expect(wacli.sent).toHaveLength(1);
+
+    // Other people's messages get no reaction, and a failed decision still takes it off.
+    await deliver(payload({ Chat: FAMILY, ID: 'G1', Text: 'oi' }));
+    decider.error = new Error('quota');
+    await deliver(payload({ Chat: FAMILY, ID: 'G2', FromMe: true, Text: '@ane resume' }));
+    expect(wacli.reactions.slice(2).map((reaction) => [reaction.id, reaction.emoji])).toEqual([
+      ['G2', '✨'],
+      ['G2', ''],
+    ]);
+  });
+
+  it('never takes its own messages for commands when the prefix has its @name', async () => {
+    const { decider, deliver } = await setup([], { agent: { message_prefix: '*@ane*\n' } });
+    await deliver(payload({ Chat: OTHER_GROUP, FromMe: true, Text: '*@ane*\nVocê tem 2 e-mails não lidos.' }));
+    await deliver(payload({ Chat: HOME, FromMe: true, Text: '*@ane*\nPronto.' }));
+    expect(decider.prompts).toHaveLength(0);
+    await deliver(payload({ Chat: OTHER_GROUP, FromMe: true, Text: '@ane resume isso' }));
+    expect(decider.prompts).toHaveLength(1);
+  });
+
+  it('does not react in a dry run, or with working_reaction = ""', async () => {
+    const off = await setup([], { agent: { working_reaction: '' } });
+    await off.deliver(payload({ Chat: HOME, FromMe: true, Text: 'oi' }));
+    expect(off.wacli.reactions).toEqual([]);
+
+    const dir = await tempDir();
+    const config = makeConfig({}, dir);
+    const wacli = new FakeWacli();
+    const { state, usage } = memoryStore(config);
+    const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
+    const agent = new Agent({ config, wacli, decider: new FakeDecider(), state, usage, instructions, log: new MemoryLogger(), dryRun: true, now: () => NOW });
+    agent.handleEvent(payload({ Chat: HOME, FromMe: true, Text: 'oi' }));
+    agent.flushPending();
+    await agent.idle();
+    expect(wacli.reactions).toEqual([]);
+  });
+
   it('ignores receipts and presence events', async () => {
     const { decider, deliver } = await setup();
     await deliver({ EventType: 'receipt', Chat: BOB, ID: 'R1' }, { EventType: 'chat_presence', Chat: BOB });

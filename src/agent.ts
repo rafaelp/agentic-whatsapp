@@ -61,6 +61,10 @@ const roundCost = (cost: number): number => Math.round(cost * 1e6) / 1e6;
 export class Agent {
   private readonly batcher: Batcher;
   private queue: Promise<void> = Promise.resolve();
+  /** The working reaction being put on each command, by message ID, so it is removed only after. */
+  private readonly reacting = new Map<string, Promise<void>>();
+  /** Reactions still being removed, for idle(). */
+  private readonly unreacting = new Set<Promise<void>>();
 
   constructor(private readonly deps: AgentDeps) {
     const { routing } = deps.config;
@@ -105,6 +109,32 @@ export class Agent {
     log.info('queued message', { ...fields, kind: route.kind });
     this.deps.events?.onQueued?.();
     this.batcher.add({ ...message, kind: route.kind });
+    if (route.kind === 'command') this.react(message);
+  }
+
+  /** Shows the owner the command was received: the working reaction, removed once it is handled. */
+  private react(message: ChatMessage): void {
+    const emoji = this.deps.config.agent.workingReaction;
+    if (emoji === '' || this.deps.dryRun === true) return;
+    const added = this.deps.wacli.sendReaction(message.chat, message.id, message.sender, emoji).catch((error: unknown) => {
+      this.deps.log.warn('could not react', { chat: message.chat, id: message.id, error: errorMessage(error) });
+    });
+    this.reacting.set(message.id, added);
+  }
+
+  private unreact(batch: Batch): void {
+    for (const message of batch.messages) {
+      const added = this.reacting.get(message.id);
+      if (added === undefined) continue;
+      this.reacting.delete(message.id);
+      const removed = added
+        .then(() => this.deps.wacli.sendReaction(message.chat, message.id, message.sender, ''))
+        .catch((error: unknown) => {
+          this.deps.log.warn('could not remove a reaction', { chat: message.chat, id: message.id, error: errorMessage(error) });
+        })
+        .finally(() => this.unreacting.delete(removed));
+      this.unreacting.add(removed);
+    }
   }
 
   /** Sends every waiting chat to the queue now, without waiting for the debounce. */
@@ -117,12 +147,22 @@ export class Agent {
     return this.batcher.clear();
   }
 
-  /** Resolves when every queued batch has been processed. */
-  idle(): Promise<void> {
-    return this.queue;
+  /** Resolves when every queued batch has been processed, and its reactions removed. */
+  async idle(): Promise<void> {
+    await this.queue;
+    await Promise.all([...this.unreacting]);
   }
 
+  /** Decides one batch, then takes the working reaction off its commands, whatever happened. */
   async processBatch(batch: Batch): Promise<void> {
+    try {
+      await this.decideBatch(batch);
+    } finally {
+      this.unreact(batch);
+    }
+  }
+
+  private async decideBatch(batch: Batch): Promise<void> {
     const { config, state, usage, log } = this.deps;
     const now = this.now();
     const invoked = batch.messages.some((message) => message.kind === 'command');

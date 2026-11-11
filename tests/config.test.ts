@@ -21,6 +21,8 @@ describe('parseConfig', () => {
     expect(config.agent).toMatchObject({ name: 'Ane', language: 'en', homeChat: '', messagePrefix: '🤖 Ane: ', settingsTools: true });
     expect(parseConfig({ agent: { name: 'Ane', settings_tools: false } }, location).agent.settingsTools).toBe(false);
     expect(config.cli).toEqual({ allow: [], deny: [], scope: 'commands', timeoutSeconds: 60 });
+    expect(config.agent.workingReaction).toBe('✨');
+    expect(parseConfig({ agent: { name: 'Ane', working_reaction: '' } }, location).agent.workingReaction).toBe('');
     expect(config.routing).toEqual({
       directMessages: true,
       groupAllowlist: [],

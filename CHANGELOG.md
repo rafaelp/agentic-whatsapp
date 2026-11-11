@@ -38,6 +38,8 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - Every day at 1 am, `agentic-whatsapp stream` shows the cost of the day before: its model calls,
   tokens and cost.
 - `agentic-whatsapp stream` clears the terminal when it starts; `--no-clear` keeps what was there.
+- Your commands get a ✨ reaction as soon as they arrive, taken off once Ane has handled them
+  (`agent.working_reaction`, `""` turns it off). Other people's messages never get one.
 - Ane can change its own settings when you ask in the home chat, such as "monitor the Family group":
   built-in MCP tools find chats by name in the wacli archive and change `routing.group_allowlist`,
   `direct_messages` and `auto_reply_chats` in the config file, keeping its comments and the previous

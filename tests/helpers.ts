@@ -83,6 +83,12 @@ export class FakeWacli implements WacliClient {
     return { path: output, bytes: Buffer.byteLength(this.media), mimeType: '' };
   }
 
+  readonly reactions: { chat: string; id: string; sender: string; emoji: string }[] = [];
+
+  async sendReaction(chat: string, id: string, sender: string, emoji: string): Promise<void> {
+    this.reactions.push({ chat, id, sender, emoji });
+  }
+
   async sendText(to: string, text: string): Promise<string | undefined> {
     if (this.failSends) throw new Error('send failed');
     this.sent.push({ to, text });

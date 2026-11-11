@@ -218,6 +218,9 @@ The plugin only needs wacli, and works with or without the agent. See the
 | Anywhere | Ask it to change its rules | "@ane from now on, tell me about every invoice" |
 | The home chat | Ask it to change what it reads | "monitor the Family group", "stop reading my one-to-one chats" |
 
+While Ane works on a command, the message gets a ✨ reaction, taken off once it is done
+(`agent.working_reaction`). Only your commands get it, never other people's messages.
+
 > [!TIP]
 > Type `@ane` as plain text. In a group, WhatsApp may suggest a contact called Ane when you type `@`.
 > If you pick it, the message carries that contact's number instead of `@ane`, and Ane does not see a
@@ -621,7 +624,8 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `agent.language` | `en` | Language it writes in. |
 | `agent.timezone` | system zone | Time zone for timestamps and for the daily limit. |
 | `agent.home_chat` | empty | ID of the chat where it notifies you. |
-| `agent.message_prefix` | `🤖 <name>: ` | Prepended to every message it sends. |
+| `agent.message_prefix` | `🤖 <name>: ` | Prepended to every message it sends, such as `"*@ane*\n"` for a bold name on a line of its own. It may contain `@<name>`: Ane knows its own messages by ID and by this prefix, so your own messages must not start with it. |
+| `agent.working_reaction` | `✨` | Reaction put on each command you send while Ane works on it, and taken off once it is done. `""` turns it off. |
 | `agent.settings_tools` | `true` | Let Ane change `[routing]` when you ask in the home chat. See [Its own settings](#its-own-settings). |
 | `routing.direct_messages` | `true` | Send one-to-one conversations to the model. |
 | `routing.group_allowlist` | `[]` | Group IDs (`…@g.us`) whose messages are sent to the model. Names are not accepted, because anyone in a group can rename it. |
