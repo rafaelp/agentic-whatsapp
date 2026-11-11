@@ -303,7 +303,7 @@ describe('Agent', () => {
       [],
       [],
     ]);
-    expect(decider.prompts[0]).toContain('- server "agentic-whatsapp": get_settings, find_chats, monitor_group');
+    expect(decider.prompts[0]).toContain('- server "agentic-whatsapp": get_settings, find_chats, monitor_chat');
     expect(decider.prompts[0]).toContain(', get_costs. It holds your own settings, and what you cost.');
   });
 
@@ -460,6 +460,33 @@ describe('Agent', () => {
     agent.flushPending();
     await agent.idle();
     expect(wacli.reactions).toEqual([]);
+  });
+
+  it('puts a message someone deleted in the stream, in any chat, without calling the model', async () => {
+    const { decider, state, log, deliver } = await setup([], { routing: { direct_messages: false, group_allowlist: [] } });
+    await deliver(payload({ Chat: FAMILY, ChatName: 'Família', ID: 'D1', SenderJID: BOB, PushName: 'Bob', Text: 'segredo' }));
+    await deliver(payload({ Chat: FAMILY, ID: 'D1', SenderJID: BOB, Text: '', Revoked: true }));
+    await deliver(payload({ Chat: FAMILY, ID: 'D1', SenderJID: BOB, Text: '', Revoked: true }));
+    expect(decider.prompts).toHaveLength(0);
+    expect(state.recentHighlights(5)).toEqual([expect.objectContaining({ kind: 'deleted', chat: FAMILY, chatName: 'Família', ids: ['D1'] })]);
+    expect(state.messagesById(FAMILY, ['D1'])[0]?.text).toBe('segredo');
+    expect(log.entries.filter((entry) => entry.message === 'message deleted').map((entry) => entry.fields)).toEqual([
+      { chat: FAMILY, chatName: 'Família', id: 'D1', sender: 'Bob', kept: true },
+    ]);
+    // Deleted before the agent saw it: the entry says so.
+    await deliver(payload({ Chat: BOB, ID: 'D2', SenderJID: BOB, Text: '', Revoked: true }));
+    expect(log.entries.at(-1)?.fields).toMatchObject({ id: 'D2', kept: false });
+  });
+
+  it('leaves the owner\'s own deletions alone, and does nothing with stream_deleted off', async () => {
+    const { state, deliver } = await setup();
+    await deliver(payload({ Chat: FAMILY, ID: 'O1', FromMe: true, Text: '@ane oi' }));
+    await deliver(payload({ Chat: FAMILY, ID: 'O1', FromMe: true, Text: '', Revoked: true }));
+    await deliver(payload({ Chat: FAMILY, ID: 'O2', FromMe: false, SenderJID: BOB, Text: 'oi' }));
+    const off = await setup([], { agent: { stream_deleted: false } });
+    await off.deliver(payload({ Chat: FAMILY, ID: 'O3', SenderJID: BOB, Text: '', Revoked: true }));
+    expect(state.recentHighlights(5).filter((entry) => entry.kind === 'deleted')).toEqual([]);
+    expect(off.state.recentHighlights(5)).toEqual([]);
   });
 
   it('ignores receipts and presence events', async () => {

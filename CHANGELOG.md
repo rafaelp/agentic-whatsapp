@@ -41,8 +41,8 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - Your commands get a ✨ reaction as soon as they arrive, taken off once Ane has handled them
   (`agent.working_reaction`, `""` turns it off). Other people's messages never get one.
 - Ane can change its own settings when you ask in the home chat, such as "monitor the Family group":
-  built-in MCP tools find chats by name in the wacli archive and change `routing.group_allowlist`,
-  `direct_messages` and `auto_reply_chats` in the config file, keeping its comments and the previous
+  built-in MCP tools find chats by name in the wacli archive and change `routing.direct_allowlist`,
+  `group_allowlist`, `direct_messages` and `auto_reply_chats` in the config file, keeping its comments and the previous
   version in `config-history/`. They are offered only for commands you typed in the home chat, need
   Antigravity, and `agent.settings_tools = false` turns them off.
 - `[cli]`: any command-line programs Ane may run for your commands, such as `gh issue create` or
@@ -54,6 +54,10 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - MCP servers that sign in with OAuth, such as Google's Gmail server: `mcp add --oauth-client-id
   --oauth-client-secret`, and `agentic-whatsapp mcp login <name>` to sign in once, in agy, from the
   agent's own workspace. The README explains how to set up Gmail.
+- `routing.direct_allowlist`: the one-to-one chats whose messages reach the model. "follow Carol" in
+  the home chat adds one, with the `monitor_chat` tool, which follows groups too.
+- `agent.stream_deleted` (on by default): when someone deletes a message for everyone, the stream
+  shows what it said, in any chat and without calling the model.
 - Ane can answer what it costs: its `get_costs` tool gives every figure of `agentic-whatsapp costs` in
   one call, with today, this week, this month and all time, the limits, and the last days by day,
   chat, model and purpose. `costs --json` and the tool share the same code.
@@ -63,6 +67,8 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - The live view of the agent that was `agentic-whatsapp stream` is now `agentic-whatsapp logs`, with
   the same options; following the raw log is `logs --raw`.
 - Changes to `[routing]` in the config file apply from the next message, without a restart.
+- Nothing reaches the model by default but your own commands: `routing.direct_messages` is now
+  `false`, so one-to-one chats need to be followed (`direct_allowlist`) or turned on all at once.
 - http MCP servers are written with `serverUrl`, as `agy mcp add` writes them; agy 1.5.5 reads the
   older `url` too.
 - The state moved from `state.json` to the database. The first start imports it and renames it to
@@ -75,6 +81,9 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 
 ### Fixed
 
+- A decision whose structured output lost a field, such as a reply without its text, now uses the
+  written answer when that one has more valid actions. A voice note in the home chat went
+  unanswered because of it.
 - `install` over a running service could leave it stopped, with "launchctl bootstrap failed: 5:
   Input/output error": it now waits for the old agent to stop before starting the new one.
 

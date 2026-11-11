@@ -38,7 +38,7 @@ export interface DailyCost {
 export interface Highlight extends HighlightRecord {
   id: number;
   at: Date;
-  kind: 'messages' | 'daily_cost';
+  kind: 'messages' | 'daily_cost' | 'deleted';
   dailyCost?: DailyCost;
 }
 
@@ -198,6 +198,21 @@ export class AgentState {
     ).id;
   }
 
+  /**
+   * Puts a message someone deleted in the stream, once. Its text comes from the messages
+   * table when the stream shows it, since wacli clears it from its own archive.
+   */
+  recordDeleted(record: { chat: string; chatName: string; id: string }, at: Date = new Date()): number | undefined {
+    if (!this.markNotice(`deleted:${record.chat}/${record.id}`, at)) return undefined;
+    return this.store.run(
+      "INSERT INTO highlights (at, chat, chat_name, message_ids, kind) VALUES (?, ?, ?, ?, 'deleted')",
+      at.toISOString(),
+      record.chat,
+      record.chatName,
+      JSON.stringify([record.id]),
+    ).id;
+  }
+
   /** Puts the cost of a day in the stream. */
   recordDailyCost(cost: DailyCost, at: Date = new Date()): number {
     return this.store.run(
@@ -240,6 +255,13 @@ export class AgentState {
       .all('SELECT * FROM highlights ORDER BY id DESC LIMIT ?', count)
       .map(highlightOf)
       .reverse();
+  }
+
+  /** The last name a chat had in the messages the agent was given; empty when none had one. */
+  chatName(chat: string): string {
+    return text(
+      this.store.get("SELECT chat_name FROM messages WHERE chat = ? AND chat_name != '' ORDER BY received_at DESC LIMIT 1", chat)?.chat_name,
+    );
   }
 
   /** The stored messages of a chat with these IDs, in that order; unknown IDs are left out. */
@@ -394,7 +416,7 @@ function highlightOf(row: Row): Highlight {
     text: text(row.text),
     ...(text(row.kind) === 'daily_cost'
       ? { kind: 'daily_cost', dailyCost: dailyCostOf(json<Record<string, unknown>>(row.data, {})) }
-      : { kind: 'messages' }),
+      : { kind: text(row.kind) === 'deleted' ? 'deleted' : 'messages' }),
   };
 }
 

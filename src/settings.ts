@@ -9,12 +9,15 @@ import { errorMessage, writeFileAtomic } from './util.js';
 /** The [routing] settings the agent may change itself, when the owner asks in the home chat. */
 export interface RoutingUpdate {
   directMessages?: boolean;
+  directAllowlist?: string[];
   groupAllowlist?: string[];
   autoReplyChats?: string[];
 }
 
 /** A group JID, such as 120363000000000000@g.us. */
 export const GROUP_JID = /^[\d-]+@g\.us$/;
+/** A one-to-one chat: a contact by number, or by hidden number (lid). */
+export const DIRECT_JID = /^[\d-]+@(s\.whatsapp\.net|lid)$/;
 /** A group, a contact or a hidden-number (lid) chat. */
 export const CHAT_JID = /^[\d-]+@(g\.us|s\.whatsapp\.net|lid)$/;
 
@@ -52,12 +55,14 @@ export class ConfigFile {
     const previous = await readFile(this.file, 'utf8');
     let text = previous;
     if (update.directMessages !== undefined) text = setTomlKey(text, 'routing', 'direct_messages', String(update.directMessages));
+    if (update.directAllowlist !== undefined) text = setTomlKey(text, 'routing', 'direct_allowlist', tomlList(update.directAllowlist));
     if (update.groupAllowlist !== undefined) text = setTomlKey(text, 'routing', 'group_allowlist', tomlList(update.groupAllowlist));
     if (update.autoReplyChats !== undefined) text = setTomlKey(text, 'routing', 'auto_reply_chats', tomlList(update.autoReplyChats));
     const config = configFromText(text, this.location);
     const { routing } = config;
     const applied =
       (update.directMessages === undefined || routing.directMessages === update.directMessages) &&
+      (update.directAllowlist === undefined || sameList(routing.directAllowlist, update.directAllowlist)) &&
       (update.groupAllowlist === undefined || sameList(routing.groupAllowlist, update.groupAllowlist)) &&
       (update.autoReplyChats === undefined || sameList(routing.autoReplyChats, update.autoReplyChats));
     if (!applied) throw new ConfigError(`Could not change [routing] in ${this.file}; edit it by hand`);
@@ -203,8 +208,8 @@ export function routingChange(before: RoutingConfig, after: RoutingConfig): Reco
   const added = (a: readonly string[], b: readonly string[]) => b.filter((item) => !a.includes(item));
   const change: Record<string, unknown> = {};
   const lists = {
-    monitoring: added(before.groupAllowlist, after.groupAllowlist),
-    stoppedMonitoring: added(after.groupAllowlist, before.groupAllowlist),
+    monitoring: [...added(before.groupAllowlist, after.groupAllowlist), ...added(before.directAllowlist, after.directAllowlist)],
+    stoppedMonitoring: [...added(after.groupAllowlist, before.groupAllowlist), ...added(after.directAllowlist, before.directAllowlist)],
     autoReplyOn: added(before.autoReplyChats, after.autoReplyChats),
     autoReplyOff: added(after.autoReplyChats, before.autoReplyChats),
   };

@@ -105,8 +105,8 @@ export async function serveMcp(
 export const SETTINGS_TOOLS = [
   'get_settings',
   'find_chats',
-  'monitor_group',
-  'stop_monitoring_group',
+  'monitor_chat',
+  'stop_monitoring_chat',
   'set_direct_messages',
   'set_auto_reply',
   'get_costs',
@@ -155,14 +155,15 @@ export function settingsTools(deps: SettingsToolsDeps): ToolDefinition[] {
     {
       name: 'get_settings',
       description:
-        'Shows your current settings: whether you read one-to-one conversations, the groups you monitor (whose ' +
-        'messages you read), and the chats where you may reply without being asked.',
+        'Shows your current settings: the chats you monitor (people and groups whose messages you read), whether ' +
+        'you read every one-to-one conversation anyway, and the chats where you may reply without being asked.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       async call() {
         const { routing } = await config.read();
         return JSON.stringify({
-          direct_messages: routing.directMessages,
+          monitored_people: await named(routing.directAllowlist),
           monitored_groups: await named(routing.groupAllowlist),
+          all_direct_messages: routing.directMessages,
           auto_reply_chats: await named(routing.autoReplyChats),
         });
       },
@@ -194,54 +195,65 @@ export function settingsTools(deps: SettingsToolsDeps): ToolDefinition[] {
             id: chat.jid,
             name: chat.name,
             type: chat.kind,
-            monitored: chat.kind === 'group' ? routing.groupAllowlist.includes(chat.jid) : routing.directMessages,
+            monitored:
+              chat.kind === 'group'
+                ? routing.groupAllowlist.includes(chat.jid)
+                : routing.directMessages || routing.directAllowlist.includes(chat.jid),
             auto_reply: routing.autoReplyChats.includes(chat.jid),
           })),
         );
       },
     },
     {
-      name: 'monitor_group',
+      name: 'monitor_chat',
       description:
-        'Starts reading the messages of a group, so your instructions apply to it. Without this you never see ' +
-        'the messages of a group, whatever the instructions say.',
+        'Starts reading the messages of a chat, a person or a group, so your instructions apply to it. Without ' +
+        'this you never see the messages of a chat, whatever the instructions say, except where the owner mentions you.',
       inputSchema: {
         type: 'object',
-        properties: { group_id: { type: 'string', description: 'The group id from find_chats, ending in @g.us' } },
-        required: ['group_id'],
+        properties: { chat_id: { type: 'string', description: 'The chat id from find_chats' } },
+        required: ['chat_id'],
         additionalProperties: false,
       },
       async call(args) {
-        const jid = asString(args.group_id).trim();
-        const group = await known(jid, GROUP_JID, 'group');
+        const jid = asString(args.chat_id).trim();
+        const chat = await known(jid, CHAT_JID, 'chat');
         const { routing } = await config.read();
-        if (routing.groupAllowlist.includes(jid)) return `Already monitoring ${label(group, jid)}.`;
-        if (!dryRun) await config.updateRouting({ groupAllowlist: [...routing.groupAllowlist, jid] });
-        return done(`monitor ${label(group, jid)}`);
+        const group = GROUP_JID.test(jid);
+        const list = group ? routing.groupAllowlist : routing.directAllowlist;
+        if (list.includes(jid)) return `Already monitoring ${label(chat, jid)}.`;
+        if (!dryRun) await config.updateRouting(group ? { groupAllowlist: [...list, jid] } : { directAllowlist: [...list, jid] });
+        return done(`monitor ${label(chat, jid)}`);
       },
     },
     {
-      name: 'stop_monitoring_group',
-      description: 'Stops reading the messages of a group. You still see the messages where the owner mentions you.',
+      name: 'stop_monitoring_chat',
+      description: 'Stops reading the messages of a chat. You still see the messages where the owner mentions you.',
       inputSchema: {
         type: 'object',
-        properties: { group_id: { type: 'string', description: 'The group id, ending in @g.us' } },
-        required: ['group_id'],
+        properties: { chat_id: { type: 'string', description: 'The chat id, from get_settings or find_chats' } },
+        required: ['chat_id'],
         additionalProperties: false,
       },
       async call(args) {
-        const jid = asString(args.group_id).trim();
-        if (!GROUP_JID.test(jid)) throw new ToolCallError(`${JSON.stringify(jid)} is not a group id. See the monitored groups with get_settings.`);
+        const jid = asString(args.chat_id).trim();
+        if (!CHAT_JID.test(jid)) throw new ToolCallError(`${JSON.stringify(jid)} is not a chat id. See the monitored chats with get_settings.`);
         const { routing } = await config.read();
-        const group = await chats.chat(jid).catch(() => null);
-        if (!routing.groupAllowlist.includes(jid)) return `${label(group, jid)} is not monitored.`;
-        if (!dryRun) await config.updateRouting({ groupAllowlist: routing.groupAllowlist.filter((item) => item !== jid) });
-        return done(`stop monitoring ${label(group, jid)}`);
+        const chat = await chats.chat(jid).catch(() => null);
+        const group = GROUP_JID.test(jid);
+        const list = group ? routing.groupAllowlist : routing.directAllowlist;
+        if (!list.includes(jid)) return `${label(chat, jid)} is not monitored.`;
+        const rest = list.filter((item) => item !== jid);
+        if (!dryRun) await config.updateRouting(group ? { groupAllowlist: rest } : { directAllowlist: rest });
+        const note = !group && routing.directMessages ? ' You still read it, because you read every one-to-one conversation.' : '';
+        return `${done(`stop monitoring ${label(chat, jid)}`)}${note}`;
       },
     },
     {
       name: 'set_direct_messages',
-      description: 'Turns reading one-to-one conversations on or off.',
+      description:
+        'Reads every one-to-one conversation (enabled: true), or only the people you monitor (enabled: false). ' +
+        'Turn it on only when the owner asks for all of them.',
       inputSchema: {
         type: 'object',
         properties: { enabled: { type: 'boolean' } },
@@ -251,8 +263,8 @@ export function settingsTools(deps: SettingsToolsDeps): ToolDefinition[] {
       async call(args) {
         if (typeof args.enabled !== 'boolean') throw new ToolCallError('"enabled" must be true or false.');
         const { routing } = await config.read();
-        const what = `${args.enabled ? 'read' : 'stop reading'} one-to-one conversations`;
-        if (routing.directMessages === args.enabled) return `Nothing to change: you already ${what.replace('stop reading', "don't read")}.`;
+        const what = args.enabled ? 'read every one-to-one conversation' : 'read only the one-to-one conversations you monitor';
+        if (routing.directMessages === args.enabled) return `Nothing to change: you already ${what}.`;
         if (!dryRun) await config.updateRouting({ directMessages: args.enabled });
         return done(what);
       },
@@ -321,10 +333,11 @@ export function settingsTools(deps: SettingsToolsDeps): ToolDefinition[] {
 /** How the model is told about the settings tools, in <tools>. */
 const SETTINGS_DESCRIPTION =
   'your own settings, and what you cost. When the owner asks about costs, tokens or limits, call get_costs once ' +
-  'and answer from it. Your instructions alone cannot make you read a group: when an owner command asks you to ' +
-  'monitor, watch or follow a group, find it with find_chats and start with monitor_group. When more than one ' +
-  'chat matches, ask the owner which one instead of guessing. Change settings only when an owner command asks, ' +
-  'and tell the owner what changed with a notify';
+  'and answer from it. You only read the chats you monitor, plus the owner\'s commands: your instructions alone ' +
+  'cannot make you read a person or a group. When an owner command asks you to follow, monitor or watch a chat, ' +
+  'or gives a rule about someone you do not monitor, find the chat with find_chats and use monitor_chat. When more ' +
+  'than one chat matches, ask the owner which one instead of guessing. Change settings only when an owner command ' +
+  'asks, and tell the owner what changed with a notify';
 
 /**
  * The built-in settings server as agy starts it: this same CLI, `settings-mcp`, with the

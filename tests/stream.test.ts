@@ -82,6 +82,33 @@ describe('HighlightRenderer, daily costs', () => {
   });
 });
 
+describe('HighlightRenderer, deleted messages', () => {
+  const deleted = (overrides: Partial<Highlight> = {}) => highlight({ kind: 'deleted', text: '', ...overrides });
+
+  it('says who deleted what, in which chat', async () => {
+    expect(await renderer().render(deleted(), [stored({ text: 'segredo' })])).toEqual([
+      '12:00:00  🗑 Família · Carol deleted a message',
+      '          segredo',
+    ]);
+    expect(await renderer().render(deleted({ chat: BOB, chatName: '' }), [stored({ senderName: 'Bob', media: 'audio', text: '', mediaText: 'oi' })])).toEqual([
+      '12:00:00  🗑 Bob deleted a message',
+      '          [audio] oi',
+    ]);
+  });
+
+  it('never reads a deleted message from the wacli archive, and hides it with --no-text', async () => {
+    expect(await renderer().render(deleted({ chat: BOB, chatName: 'Bob' }), [stored({ id: 'OLD', text: '' })])).toEqual([
+      '12:00:00  🗑 Bob deleted a message',
+      '          (its text was not kept)',
+    ]);
+    expect(await renderer().render(deleted({ ids: ['GONE'] }), [])).toEqual([
+      '12:00:00  🗑 Família · someone deleted a message',
+      '          (its text was not kept)',
+    ]);
+    expect(await renderer(false).render(deleted(), [stored()])).toEqual(['12:00:00  🗑 Família · Carol deleted a message']);
+  });
+});
+
 describe('stream', () => {
   it('prints recent highlights, then new ones as they are recorded', async () => {
     const dir = await tempDir();

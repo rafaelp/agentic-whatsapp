@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Store } from '../src/db.js';
 import { InstructionsStore } from '../src/instructions.js';
 import { AgentState } from '../src/state.js';
-import { BOB, HOME, message, NOW, tempDir } from './helpers.js';
+import { BOB, FAMILY, HOME, message, NOW, tempDir } from './helpers.js';
 
 const queued = { process: true, kind: 'message' } as const;
 
@@ -218,6 +218,16 @@ describe('AgentState', () => {
     const quiet = Store.open(null);
     new AgentState(quiet, { saveText: false }).recordCommand({ program: 'joplin', rule: 'joplin ls', command: ['joplin', 'ls'], status: 'ok', durationMs: 1 });
     expect(quiet.get('SELECT args FROM commands')?.args).toBeNull();
+  });
+
+  it('puts a deleted message in the stream once, and knows the last name of a chat', () => {
+    const state = new AgentState(Store.open(null));
+    state.recordMessage(message({ chat: FAMILY, chatName: 'Família', id: 'D1' }), queued, NOW);
+    expect(state.chatName(FAMILY)).toBe('Família');
+    expect(state.chatName(BOB)).toBe('');
+    const id = state.recordDeleted({ chat: FAMILY, chatName: 'Família', id: 'D1' }, NOW);
+    expect(state.recordDeleted({ chat: FAMILY, chatName: 'Família', id: 'D1' }, NOW)).toBeUndefined();
+    expect(state.highlightsAfter(0)).toEqual([{ id, at: NOW, chat: FAMILY, chatName: 'Família', ids: ['D1'], text: '', kind: 'deleted' }]);
   });
 
   it('keeps the reason of a highlight only while texts are kept', () => {

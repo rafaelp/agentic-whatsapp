@@ -5,6 +5,7 @@ export interface RoutingRules {
   agentName: string;
   homeChat: string;
   directMessages: boolean;
+  directAllowlist: readonly string[];
   groupAllowlist: readonly string[];
   maxMessageAgeMinutes: number;
 }
@@ -35,7 +36,7 @@ export function mentionsAgent(text: string, agentName: string): boolean {
  *
  * - your own message mentioning the agent, in any chat: command
  * - your own message in the home chat: command
- * - a direct conversation: message (when direct_messages is on)
+ * - a direct conversation: message, when direct_messages is on or the chat is in direct_allowlist
  * - a group: message, only when its JID is in the allowlist
  * - anything else: skipped
  */
@@ -67,7 +68,9 @@ export function routeMessage(message: ChatMessage, rules: RoutingRules, context:
       ? { process: true, kind: 'message' }
       : skip('group not in group_allowlist');
   }
-  return rules.directMessages ? { process: true, kind: 'message' } : skip('direct_messages is off');
+  return rules.directMessages || rules.directAllowlist.includes(message.chat)
+    ? { process: true, kind: 'message' }
+    : skip('not in direct_allowlist');
 }
 
 function skip(reason: string): Route {

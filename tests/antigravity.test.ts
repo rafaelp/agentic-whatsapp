@@ -79,6 +79,21 @@ describe('decisionFromResult', () => {
     expect(decision.actions).toEqual([]);
   });
 
+  it('uses the written answer when the structured output lost an action', () => {
+    const written = '```json\n{"actions": [{"type": "reply", "text": "Você falou: oi"}]}\n```';
+    const lost = decisionFromResult({ status: 'SUCCESS', structured_output: { actions: [{ type: 'reply' }] }, response: written }, '', 0);
+    expect(lost.actions).toEqual([{ type: 'reply', text: 'Você falou: oi' }]);
+    expect(lost.warnings[0]).toMatch(/used the written answer/);
+
+    const same = decisionFromResult(
+      { status: 'SUCCESS', structured_output: { actions: [{ type: 'notify', text: 'a' }] }, response: '{"actions": [{"type": "notify", "text": "b"}]}' },
+      '',
+      0,
+    );
+    expect(same.actions).toEqual([{ type: 'notify', text: 'a' }]);
+    expect(decisionFromResult({ status: 'SUCCESS', structured_output: { actions: [] }, response: 'not json' }, '', 0).actions).toEqual([]);
+  });
+
   it('raises a failed status with its error', () => {
     expect(() => decisionFromResult({ status: 'ERROR', error: 'quota exhausted' }, '', 1)).toThrow(
       /status ERROR: quota exhausted/,

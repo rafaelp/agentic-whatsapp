@@ -479,9 +479,22 @@ function successfulResult(result: unknown, stderr: string, code: number | null):
 /** Turns the `result` event of `agy --output-format stream-json` into a decision. */
 export function decisionFromResult(result: unknown, stderr: string, code: number | null): Decision {
   const success = successfulResult(result, stderr, code);
-  if (isRecord(success.structured_output)) return decisionFromValue(success.structured_output);
-  if (typeof success.response === 'string') return parseDecision(success.response);
-  throw new Error('Antigravity answered without a decision');
+  const structured = isRecord(success.structured_output) ? decisionFromValue(success.structured_output) : undefined;
+  if (typeof success.response !== 'string') {
+    if (structured !== undefined) return structured;
+    throw new Error('Antigravity answered without a decision');
+  }
+  if (structured === undefined) return parseDecision(success.response);
+  // The structured output can lose a field the written answer has: once, a reply came without its
+  // text. The answer with more valid actions wins; the structured output on a tie.
+  let written: Decision;
+  try {
+    written = parseDecision(success.response);
+  } catch {
+    return structured;
+  }
+  if (written.actions.length <= structured.actions.length) return structured;
+  return { ...written, warnings: ['used the written answer, which had more valid actions than the structured output', ...written.warnings] };
 }
 
 /** The description or transcript a media run answered with. */

@@ -23,7 +23,7 @@ type RawSections = Record<string, Record<string, unknown>>;
 export function makeConfig(sections: RawSections = {}, stateDir = join(tmpdir(), 'agentic-whatsapp-test')): Config {
   const base: RawSections = {
     agent: { name: 'Ane', language: 'pt-BR', timezone: 'America/Sao_Paulo', home_chat: HOME },
-    routing: { group_allowlist: [FAMILY], debounce_seconds: 0 },
+    routing: { group_allowlist: [FAMILY], direct_messages: true, debounce_seconds: 0 },
   };
   const merged: RawSections = { ...base };
   for (const [name, values] of Object.entries(sections)) merged[name] = { ...base[name], ...values };

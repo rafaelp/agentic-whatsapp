@@ -29,15 +29,23 @@ home_chat = ${quote(options.homeChat)}
 # Reaction the agent puts on your commands while it works on them, removed once it is
 # done. "" turns it off.
 working_reaction = "✨"
+# Show in agentic-whatsapp stream the messages other people delete for everyone, with
+# what they said. Nothing goes to the model.
+stream_deleted = true
 # Let the agent change [routing] when you ask in the home chat, such as
 # "monitor the Family group" (Antigravity only).
 settings_tools = true
 
 [routing]
-# Send one-to-one conversations to the model.
-direct_messages = true
+# Only the chats listed here reach the model, plus your own commands. Ask in the home
+# chat to follow a chat ("follow Carol", "monitor the Family group"), or list it here.
+# One-to-one chats whose messages are sent to the model (JIDs ending in
+# @s.whatsapp.net or @lid).
+direct_allowlist = []
 # Groups whose messages are sent to the model (JIDs ending in @g.us).
 group_allowlist = []
+# Send every one-to-one conversation to the model, allowlisted or not.
+direct_messages = false
 # Chats where the agent may reply to other people without being asked.
 # Empty: it only replies in chats where you invoke it with "${mention}".
 auto_reply_chats = []

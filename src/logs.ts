@@ -39,6 +39,7 @@ const KNOWN = new Set([
   'highlight',
   'daily cost',
   'settings changed',
+  'message deleted',
   'command',
   'dry run: would run a command',
 ]);
@@ -156,6 +157,13 @@ export class LogRenderer {
         body = `⛔ refused to run ${asString(f.program) || 'a command'}: ${asString(f.reason)}`;
         color = paint.yellow;
         break;
+      case 'message deleted': {
+        this.remember(f);
+        const where = chatKind(chat) === 'group' ? `${this.chatLabel(chat)} · ${this.who(f)}` : this.chatLabel(chat);
+        body = `🗑 ${where} deleted a message${f.kept === false ? ' (its text was not kept)' : ', in the stream'}`;
+        color = paint.yellow;
+        break;
+      }
       case 'settings changed': {
         const chats = (key: string) => (Array.isArray(f[key]) ? f[key].map((jid) => this.chatLabel(asString(jid))).join(', ') : '');
         const parts = [

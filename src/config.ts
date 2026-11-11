@@ -16,10 +16,15 @@ export interface AgentConfig {
   settingsTools: boolean;
   /** Reaction put on the owner's commands while the agent works on them; empty: none. */
   workingReaction: string;
+  /** Show in the stream the messages other people delete, with their text. */
+  streamDeleted: boolean;
 }
 
 export interface RoutingConfig {
+  /** Every one-to-one conversation goes to the model. Off: only those in directAllowlist. */
   directMessages: boolean;
+  /** One-to-one conversations that go to the model even with directMessages off. */
+  directAllowlist: string[];
   groupAllowlist: string[];
   autoReplyChats: string[];
   debounceSeconds: number;
@@ -216,12 +221,14 @@ export function parseConfig(
     messagePrefix: agentSection.string('message_prefix', defaultMessagePrefix(name)),
     settingsTools: agentSection.boolean('settings_tools', true),
     workingReaction: agentSection.string('working_reaction', '✨').trim(),
+    streamDeleted: agentSection.boolean('stream_deleted', true),
   };
   agentSection.finish();
 
   const routingSection = root.section('routing');
   const routing: RoutingConfig = {
-    directMessages: routingSection.boolean('direct_messages', true),
+    directMessages: routingSection.boolean('direct_messages', false),
+    directAllowlist: routingSection.strings('direct_allowlist', []),
     groupAllowlist: routingSection.strings('group_allowlist', []),
     autoReplyChats: routingSection.strings('auto_reply_chats', []),
     debounceSeconds: routingSection.integer('debounce_seconds', 15, 0, 600),
@@ -232,6 +239,14 @@ export function parseConfig(
       throw new ConfigError(
         `routing.group_allowlist takes group JIDs ending in @g.us, and ${JSON.stringify(group)} is not one. ` +
           'Group names are not accepted because anyone in a group can rename it. List your groups with: wacli groups list',
+      );
+    }
+  }
+  for (const chat of routing.directAllowlist) {
+    if (!/@(s\.whatsapp\.net|lid)$/.test(chat)) {
+      throw new ConfigError(
+        `routing.direct_allowlist takes contact JIDs ending in @s.whatsapp.net or @lid, and ${JSON.stringify(chat)} is not one. ` +
+          'Find them with: wacli chats list',
       );
     }
   }

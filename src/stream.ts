@@ -24,6 +24,12 @@ export const CLEAR_SCREEN = '\x1b[H\x1b[2J\x1b[3J';
 /** Indent of the lines under a highlight's header, the width of "HH:MM:SS  ". */
 const INDENT = ' '.repeat(10);
 
+/** A message's media type, text and description or transcript, on one line. */
+function describe(message: Pick<StoredText, 'media' | 'text' | 'mediaText'>): string {
+  const parts = [message.media === '' ? '' : `[${message.media}]`, oneLine(message.text), oneLine(message.mediaText)];
+  return parts.filter((part) => part !== '').join(' ');
+}
+
 /** Turns a highlight and its messages into the lines `agentic-whatsapp stream` prints. */
 export class HighlightRenderer {
   private readonly paint: Painter;
@@ -43,6 +49,7 @@ export class HighlightRenderer {
     const time =
       dayKey(highlight.at, zone) === dayKey(this.now(), zone) ? formatClock(highlight.at, zone) : formatLocalTime(highlight.at, zone);
     if (highlight.kind === 'daily_cost') return [`${paint.dim(time)}  ${this.costLine(highlight.dailyCost)}`];
+    if (highlight.kind === 'deleted') return this.deleted(time, highlight, messages[0]);
     const lines = [`${paint.dim(time)}  ${paint.bold(paint.magenta(`★ ${this.chatLabel(highlight, messages)}`))}`];
     for (const message of messages) {
       const who = message.fromMe ? 'you' : message.senderName || message.sender.split('@')[0] || 'someone';
@@ -74,8 +81,24 @@ export class HighlightRenderer {
   private async content(chat: string, message: StoredText): Promise<string> {
     let text = message.text;
     if (text === '' && message.mediaText === '') text = (await this.lookup(chat, message.id)) ?? '';
-    const parts = [message.media === '' ? '' : `[${message.media}]`, oneLine(text), oneLine(message.mediaText)];
-    return parts.filter((part) => part !== '').join(' ');
+    return describe({ ...message, text });
+  }
+
+  /**
+   * "🗑 Família · Carol deleted a message", then what it said. wacli clears a deleted message
+   * from its archive, so only the database has it.
+   */
+  private deleted(time: string, highlight: Highlight, message: StoredText | undefined): string[] {
+    const { paint } = this;
+    const who = message === undefined ? 'someone' : message.senderName || message.sender.split('@')[0] || 'someone';
+    const label = this.chatLabel(highlight, message === undefined ? [] : [message]);
+    const where = chatKind(highlight.chat) === 'group' ? `${label} · ${who}` : label;
+    const lines = [`${paint.dim(time)}  ${paint.bold(paint.red(`🗑 ${where} deleted a message`))}`];
+    if (this.options.text) {
+      const content = message === undefined ? '' : describe(message);
+      lines.push(`${INDENT}${content === '' ? paint.dim('(its text was not kept)') : content}`);
+    }
+    return lines;
   }
 }
 
@@ -107,7 +130,7 @@ export async function stream(
   const store = Store.open(config.paths.database);
   const state = new AgentState(store);
   const show = async (highlight: Highlight) => {
-    const messages = highlight.kind === 'messages' ? state.messagesById(highlight.chat, highlight.ids) : [];
+    const messages = highlight.kind === 'daily_cost' ? [] : state.messagesById(highlight.chat, highlight.ids);
     for (const line of await renderer.render(highlight, messages)) write(line);
   };
   try {

@@ -53,12 +53,12 @@ async function configFile(text = TEMPLATE) {
 describe('ConfigFile', () => {
   it('changes [routing] in place and keeps the previous file', async () => {
     const { dir, file, config } = await configFile();
-    const updated = await config.updateRouting({ groupAllowlist: [FAMILY], directMessages: false });
-    expect(updated.routing).toMatchObject({ groupAllowlist: [FAMILY], directMessages: false });
+    const updated = await config.updateRouting({ groupAllowlist: [FAMILY], directMessages: true });
+    expect(updated.routing).toMatchObject({ groupAllowlist: [FAMILY], directMessages: true });
 
     const text = await readFile(file, 'utf8');
     expect(text).toBe(
-      TEMPLATE.replace('group_allowlist = []', `group_allowlist = ["${FAMILY}"]`).replace('direct_messages = true', 'direct_messages = false'),
+      TEMPLATE.replace('group_allowlist = []', `group_allowlist = ["${FAMILY}"]`).replace('direct_messages = false', 'direct_messages = true'),
     );
     const history = await readdir(join(dir, 'history'));
     expect(history).toHaveLength(1);
@@ -68,7 +68,7 @@ describe('ConfigFile', () => {
 
   it('writes nothing when nothing changes, or when the result would not be valid', async () => {
     const { dir, file, config } = await configFile();
-    await config.updateRouting({ directMessages: true });
+    await config.updateRouting({ directMessages: false });
     await expect(readdir(join(dir, 'history'))).rejects.toThrow();
 
     await expect(config.updateRouting({ groupAllowlist: ['Família'] })).rejects.toThrow(ConfigError);
@@ -96,7 +96,7 @@ describe('LiveRouting', () => {
     const log = new MemoryLogger();
     const live = new LiveRouting(location, (await config.read()).routing, log);
     await writeFile(file, `${TEMPLATE}\n[routing\n`);
-    expect(live.current().directMessages).toBe(true);
+    expect(live.current().directMessages).toBe(false);
     expect(log.has('warn', 'config file changed but could not be read; keeping the settings it had')).toBe(true);
   });
 });

@@ -286,7 +286,8 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
   report(
     true,
     'routing',
-    `direct messages ${config.routing.directMessages ? 'on' : 'off'}, ${config.routing.groupAllowlist.length} allowlisted group(s)`,
+    `${config.routing.directMessages ? 'every one-to-one chat' : `${config.routing.directAllowlist.length} allowlisted one-to-one chat(s)`}, ` +
+      `${config.routing.groupAllowlist.length} allowlisted group(s), plus your commands`,
   );
 
   const wacli = new Wacli(config.wacli.command, config.wacli.store);

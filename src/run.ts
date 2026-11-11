@@ -188,6 +188,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     dryRun: options.dryRun,
     service: options.service,
     directMessages: config.routing.directMessages,
+    allowlistedDirect: config.routing.directMessages ? undefined : config.routing.directAllowlist.length,
     allowlistedGroups: config.routing.groupAllowlist.length,
     settingsTools: tools !== undefined && config.agent.settingsTools,
     cliRules: tools === undefined ? undefined : config.cli.allow.length || undefined,

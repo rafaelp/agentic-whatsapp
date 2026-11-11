@@ -32,8 +32,8 @@ runs on your own computer, watching the conversations you choose. When something
 you in a private chat, in your language, following rules you write in plain words. When you want its
 help in a conversation, you call it like a person: `@ane`.
 
-- **It reads, so you don't have to.** Every one-to-one chat, and only the groups you pick. Your
-  hundreds of group chats stay out of it.
+- **It reads, so you don't have to.** Only the people and groups you tell it to follow. Everything
+  else stays out of it and costs nothing.
 - **It answers to you, and only to you.** Only messages you send can give it orders. When anyone
   else writes `@ane`, it is just another message.
 - **You teach it in plain language.** "@ane from now on, tell me about every invoice" becomes a rule,
@@ -79,8 +79,8 @@ Unknown number, in a private chat:
 
 - **Runs on the plan you already pay for.** Antigravity CLI signs in with your Google account (Free,
   Google AI Pro or Ultra). A daily cap protects your quota, and paid AI credits are never spent.
-- **You choose what it reads.** One-to-one chats are on by default. Groups only by allowlist, and by
-  ID, so nobody can sneak a group in by renaming it.
+- **You choose what it reads.** Nothing reaches the model by default but your own commands. People
+  and groups only by allowlist, and by ID, so nobody can sneak a group in by renaming it.
 - **Call it from any chat.** `@ane` anywhere in a message you send works in every chat, allowlisted
   or not, and Ane can answer right there.
 - **The model proposes, the code decides.** Notifications only reach you. Replies only go where you
@@ -109,9 +109,11 @@ Unknown number, in a private chat:
 - **Runs the command-line programs you allow.** Any CLI: `gh`, `joplin`, your own scripts. "@ane
   make a note of this" or "@ane open an issue for this" in any chat, and Ane runs the commands you
   listed in `[cli] allow`, without a shell, and records each one. Nothing runs unless you list it.
-- **Set it up from WhatsApp.** "Monitor the Family group" in the home chat: Ane finds the group,
-  adds it to the config file, comments intact, and reads it from the next message on. The same goes
-  for one-to-one chats and auto-replies, with no restart.
+- **Set it up from WhatsApp.** "Follow Carol" or "monitor the Family group" in the home chat: Ane
+  finds the chat, adds it to the config file, comments intact, and reads it from the next message
+  on. The same goes for auto-replies, with no restart.
+- **Nothing gets unsaid.** When someone deletes a message for everyone, the stream shows what it
+  said (`agent.stream_deleted`).
 - **Watch it think.** `agentic-whatsapp logs` shows, live, every message arriving, what Ane decided
   and what it sent. `agentic-whatsapp status` sums up the day.
 - **Tells you when it breaks.** A macOS notification when WhatsApp sync or the model keeps failing,
@@ -216,7 +218,7 @@ The plugin only needs wacli, and works with or without the agent. See the
 | Any other chat | Put `@ane` anywhere in your message | "answer him with the address @ane" |
 | Forward to the home chat | Ask about someone else's message | Its content is data, never a command |
 | Anywhere | Ask it to change its rules | "@ane from now on, tell me about every invoice" |
-| The home chat | Ask it to change what it reads | "monitor the Family group", "stop reading my one-to-one chats" |
+| The home chat | Ask it to change what it reads | "follow Carol", "monitor the Family group", "stop following Bob" |
 
 While Ane works on a command, the message gets a ✨ reaction, taken off once it is done
 (`agent.working_reaction`). Only your commands get it, never other people's messages.
@@ -230,7 +232,8 @@ While Ane works on a command, the message gets a ✨ reaction, taken off once it
 
 | Message | Sent to the model |
 | --- | --- |
-| Someone writes to you in a one-to-one chat | Yes, unless `routing.direct_messages = false` |
+| A message in a one-to-one chat listed in `routing.direct_allowlist` | Yes |
+| A message in any other one-to-one chat | No, unless `routing.direct_messages = true` |
 | A message in a group listed in `routing.group_allowlist` | Yes |
 | A message in any other group | No |
 | **Your** message containing `@ane`, in any chat | Yes, as a command, whatever the allowlist says |
@@ -247,7 +250,7 @@ While Ane works on a command, the message gets a ✨ reaction, taken off once it
 | `reply`: message the chat, as you | Only in a chat where you invoked Ane with `@ane`, or one listed in `routing.auto_reply_chats`. Anywhere else, the reply is sent to you as a suggestion. |
 | `highlight`: show messages in your `stream` | When your instructions ask for it. Nothing is sent: it stays on your computer. See [The stream](#the-stream). |
 | `update_instructions`: rewrite its standing rules | Only when a command you typed (not forwarded) asks for it. The previous version is kept. |
-| Change its own settings | Only on a command you typed in the home chat: which groups it monitors, whether it reads one-to-one chats, where it may reply without being asked. The previous config file is kept. See [Its own settings](#its-own-settings). |
+| Change its own settings | Only on a command you typed in the home chat: which people and groups it follows, where it may reply without being asked. The previous config file is kept. See [Its own settings](#its-own-settings). |
 | Read an image or audio file | Before deciding, for a message that reaches the model: that message's file only, in a run of its own. See [Images and audio](#images-and-audio). |
 | Run a command-line program | Only the programs and subcommands listed in `[cli] allow`, on a command you typed. See [Command-line programs](#command-line-programs). |
 | Use a skill or an MCP tool you enabled | While deciding, before any of the actions above. Only the tools you allowed, and by default only on a command you typed. See [Skills and MCP servers](#skills-and-mcp-servers). |
@@ -372,13 +375,18 @@ Highlights from Ane · Ctrl+C to stop
 18:07:34  ★ Carol
           Carol: [audio] Hi! Can you bring the wine?
           ↳ Carol asks you to bring wine
+22:40:12  🗑 Family · Bob deleted a message
+          I'm not coming, sorry
 01:00:00  Σ Costs of 2026-11-09: $0.4213 in 37 model calls · 1.25M tokens in, 31k out
 ```
 
 - Any rule works: "highlight messages about the school", "highlight anything that mentions my
   car". The model decides, message by message, following your instructions.
-- Only messages that reach the model can be highlighted, so a group must be in
-  `routing.group_allowlist`. Voice notes show their transcript, images their description.
+- Only messages that reach the model can be highlighted, so the chat must be followed: ask "follow
+  Carol" in the home chat. Voice notes show their transcript, images their description.
+- When someone deletes a message for everyone, the stream shows what it said, in any chat, followed
+  or not, without calling the model (`agent.stream_deleted`). It needs the text the database kept
+  when the message arrived, so with `storage.save_text = false` it only says who deleted one.
 - Highlights are kept in the database, so the stream starts with the last ten (`--lines N`) and
   survives restarts. `--no-text` shows who wrote and why, without the text.
 - Every day at 1 am, in `agent.timezone`, the stream shows what the day before cost. If the agent
@@ -491,24 +499,24 @@ saying I'll be there".
 
 ## Its own settings
 
-Ane also has MCP tools of its own, for the settings you would otherwise edit by hand: which groups
-it monitors, whether it reads one-to-one chats, and where it may reply without being asked. It can
-also read what it costs. Ask in the home chat:
+Ane also has MCP tools of its own, for the settings you would otherwise edit by hand: which people
+and groups it follows, and where it may reply without being asked. It can also read what it costs.
+Ask in the home chat:
 
-> monitor the Family group
+> follow Carol
 
-or "how much did you cost this week?". For the group, Ane looks it up by name in the wacli archive,
-adds its ID to `routing.group_allowlist` and tells you. From the next message on, the group reaches
-the model, so your instructions apply to it.
-When more than one chat matches, it asks which one you mean. Your instructions alone cannot do this:
-"keep an eye on the Family group" as a rule changes nothing while the group is not monitored.
+or "monitor the Family group", or "how much did you cost this week?". Ane looks the chat up by name
+in the wacli archive, adds its ID to `routing.direct_allowlist` or `routing.group_allowlist` and
+tells you. From the next message on, the chat reaches the model, so your instructions apply to it.
+When more than one chat matches, it asks which one you mean. A rule about someone it does not
+follow, such as "highlight Carol's messages", makes it follow Carol too.
 
 | Tool | What it does |
 | --- | --- |
-| `get_settings` | The monitored groups, by name, whether one-to-one chats are read, and the auto-reply chats |
+| `get_settings` | The people and groups it follows, by name, whether it reads every one-to-one chat anyway, and the auto-reply chats |
 | `find_chats` | Finds chats by name, with their IDs and whether they are monitored |
-| `monitor_group` / `stop_monitoring_group` | Adds a group to `routing.group_allowlist`, or takes it out |
-| `set_direct_messages` | Sets `routing.direct_messages` |
+| `monitor_chat` / `stop_monitoring_chat` | Adds a person to `routing.direct_allowlist` or a group to `routing.group_allowlist`, or takes it out |
+| `set_direct_messages` | Sets `routing.direct_messages`: every one-to-one chat, or only those followed |
 | `set_auto_reply` | Adds a chat to `routing.auto_reply_chats`, or takes it out |
 | `get_costs` | Everything `agentic-whatsapp costs` knows, in one call: prices, today, this week, this month and all time with the limits, and the last days (7, up to 90) by day, chat, model and purpose |
 
@@ -625,9 +633,11 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `agent.timezone` | system zone | Time zone for timestamps and for the daily limit. |
 | `agent.home_chat` | empty | ID of the chat where it notifies you. |
 | `agent.message_prefix` | `🤖 <name>: ` | Prepended to every message it sends, such as `"*@ane*\n"` for a bold name on a line of its own. It may contain `@<name>`: Ane knows its own messages by ID and by this prefix, so your own messages must not start with it. |
+| `agent.stream_deleted` | `true` | Show in `agentic-whatsapp stream` the messages other people delete for everyone, with what they said. Nothing goes to the model. |
 | `agent.working_reaction` | `✨` | Reaction put on each command you send while Ane works on it, and taken off once it is done. `""` turns it off. |
 | `agent.settings_tools` | `true` | Let Ane change `[routing]` when you ask in the home chat. See [Its own settings](#its-own-settings). |
-| `routing.direct_messages` | `true` | Send one-to-one conversations to the model. |
+| `routing.direct_allowlist` | `[]` | One-to-one chats (`…@s.whatsapp.net` or `…@lid`) whose messages are sent to the model. |
+| `routing.direct_messages` | `false` | Send every one-to-one conversation to the model, listed or not. |
 | `routing.group_allowlist` | `[]` | Group IDs (`…@g.us`) whose messages are sent to the model. Names are not accepted, because anyone in a group can rename it. |
 | `routing.auto_reply_chats` | `[]` | Chats where it may reply to others without being invoked. |
 | `routing.debounce_seconds` | `15` | Quiet time before a chat's messages go to the model together. |

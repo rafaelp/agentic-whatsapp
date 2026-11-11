@@ -111,6 +111,16 @@ describe('LogRenderer', () => {
     );
   });
 
+  it('shows deleted messages', async () => {
+    const r = renderer();
+    expect(await r.render(entry('message deleted', { chat: FAMILY, chatName: 'Família', id: 'D1', sender: 'Bob', kept: true }))).toBe(
+      '12:00:00  🗑 Família · Bob deleted a message, in the stream',
+    );
+    expect(await r.render(entry('message deleted', { chat: BOB, id: 'D2', kept: false }))).toBe(
+      `12:00:00  🗑 ${BOB.split('@')[0]} deleted a message (its text was not kept)`,
+    );
+  });
+
   it('shows the cost of the day before', async () => {
     const r = renderer();
     expect(r.wants(entry('daily cost', { day: '2026-11-09', calls: 37, cost: 0.4213 }))).toBe(true);

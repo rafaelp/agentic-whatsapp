@@ -7,6 +7,7 @@ const rules: RoutingRules = {
   agentName: 'Ane',
   homeChat: HOME,
   directMessages: true,
+  directAllowlist: [],
   groupAllowlist: [FAMILY],
   maxMessageAgeMinutes: 60,
 };
@@ -40,8 +41,15 @@ describe('routeMessage', () => {
     expect(route(message())).toEqual({ process: true, kind: 'message' });
   });
 
-  it('skips direct conversations when direct_messages is off', () => {
-    expect(route(message(), { directMessages: false })).toMatchObject({ process: false });
+  it('skips direct conversations when direct_messages is off, unless they are allowlisted', () => {
+    expect(route(message(), { directMessages: false })).toEqual({ process: false, reason: 'not in direct_allowlist' });
+    expect(route(message(), { directMessages: false, directAllowlist: [BOB] })).toEqual({ process: true, kind: 'message' });
+    expect(route(message({ chat: '86088878149676@lid' }), { directMessages: false, directAllowlist: [BOB] })).toMatchObject({ process: false });
+  });
+
+  it('still treats your own @mention as a command in a chat nobody follows', () => {
+    const mine = message({ fromMe: true, sender: '', text: '@ane anota isso' });
+    expect(route(mine, { directMessages: false })).toEqual({ process: true, kind: 'command' });
   });
 
   it('sends allowlisted groups to Gemini', () => {

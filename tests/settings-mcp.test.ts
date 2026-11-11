@@ -136,46 +136,52 @@ describe('settingsTools', () => {
     ]);
     expect(JSON.parse(await call('find_chats', { query: 'bob', type: 'group' }))).toEqual([]);
     expect(JSON.parse(await call('find_chats', { query: 'bob' }))).toEqual([
-      { id: BOB, name: 'Bob', type: 'direct', monitored: true, auto_reply: false },
+      { id: BOB, name: 'Bob', type: 'direct', monitored: false, auto_reply: false },
     ]);
+    await call('monitor_chat', { chat_id: BOB });
+    expect(JSON.parse(await call('find_chats', { query: 'bob' }))[0].monitored).toBe(true);
     await expect(call('find_chats', { query: ' ' })).rejects.toThrow(ToolCallError);
   });
 
-  it('starts and stops monitoring a group, in the config file', async () => {
+  it('starts and stops monitoring people and groups, each in its own list', async () => {
     const { call, config } = await setup();
-    expect(await call('monitor_group', { group_id: FAMILY })).toBe(`Done: monitor "Família" (${FAMILY}). It applies from the next message.`);
-    expect(await call('monitor_group', { group_id: FAMILY })).toBe(`Already monitoring "Família" (${FAMILY}).`);
-    await call('monitor_group', { group_id: OTHER_GROUP });
-    expect((await config.read()).routing.groupAllowlist).toEqual([FAMILY, OTHER_GROUP]);
+    expect(await call('monitor_chat', { chat_id: FAMILY })).toBe(`Done: monitor "Família" (${FAMILY}). It applies from the next message.`);
+    expect(await call('monitor_chat', { chat_id: FAMILY })).toBe(`Already monitoring "Família" (${FAMILY}).`);
+    await call('monitor_chat', { chat_id: OTHER_GROUP });
+    expect(await call('monitor_chat', { chat_id: BOB })).toBe(`Done: monitor "Bob" (${BOB}). It applies from the next message.`);
+    expect((await config.read()).routing).toMatchObject({ groupAllowlist: [FAMILY, OTHER_GROUP], directAllowlist: [BOB] });
     expect(JSON.parse(await call('get_settings'))).toEqual({
-      direct_messages: true,
+      monitored_people: [{ id: BOB, name: 'Bob' }],
       monitored_groups: [
         { id: FAMILY, name: 'Família' },
         { id: OTHER_GROUP, name: 'Família estendida' },
       ],
+      all_direct_messages: false,
       auto_reply_chats: [],
     });
 
-    expect(await call('stop_monitoring_group', { group_id: FAMILY })).toBe(
+    expect(await call('stop_monitoring_chat', { chat_id: FAMILY })).toBe(
       `Done: stop monitoring "Família" (${FAMILY}). It applies from the next message.`,
     );
-    expect((await config.read()).routing.groupAllowlist).toEqual([OTHER_GROUP]);
-    expect(await call('stop_monitoring_group', { group_id: FAMILY })).toBe(`"Família" (${FAMILY}) is not monitored.`);
+    await call('stop_monitoring_chat', { chat_id: BOB });
+    expect((await config.read()).routing).toMatchObject({ groupAllowlist: [OTHER_GROUP], directAllowlist: [] });
+    expect(await call('stop_monitoring_chat', { chat_id: FAMILY })).toBe(`"Família" (${FAMILY}) is not monitored.`);
   });
 
-  it('refuses ids that are not groups, or that the archive does not know', async () => {
+  it('refuses ids that are not chats, or that the archive does not know', async () => {
     const { call, file, template } = await setup();
-    await expect(call('monitor_group', { group_id: 'Família' })).rejects.toThrow('"Família" is not a group id. Find it with find_chats.');
-    await expect(call('monitor_group', { group_id: BOB })).rejects.toThrow('is not a group id');
-    await expect(call('monitor_group', { group_id: '120363999999999999@g.us' })).rejects.toThrow('No chat with id 120363999999999999@g.us');
+    await expect(call('monitor_chat', { chat_id: 'Família' })).rejects.toThrow('"Família" is not a chat id. Find it with find_chats.');
+    await expect(call('monitor_chat', { chat_id: 'status@broadcast' })).rejects.toThrow('is not a chat id');
+    await expect(call('monitor_chat', { chat_id: '120363999999999999@g.us' })).rejects.toThrow('No chat with id 120363999999999999@g.us');
     await expect(call('set_auto_reply', { chat_id: 'status@broadcast', enabled: true })).rejects.toThrow('is not a chat id');
     expect(await readFile(file, 'utf8')).toBe(template);
   });
 
   it('turns direct messages and auto-replies on and off', async () => {
     const { call, config } = await setup();
-    expect(await call('set_direct_messages', { enabled: false })).toBe('Done: stop reading one-to-one conversations. It applies from the next message.');
-    expect(await call('set_direct_messages', { enabled: false })).toBe("Nothing to change: you already don't read one-to-one conversations.");
+    expect(await call('set_direct_messages', { enabled: true })).toBe('Done: read every one-to-one conversation. It applies from the next message.');
+    expect(await call('set_direct_messages', { enabled: true })).toBe('Nothing to change: you already read every one-to-one conversation.');
+    await call('set_direct_messages', { enabled: false });
     await expect(call('set_direct_messages', { enabled: 'no' })).rejects.toThrow('"enabled" must be true or false.');
 
     expect(await call('set_auto_reply', { chat_id: BOB, enabled: true })).toBe(
@@ -201,8 +207,8 @@ describe('settingsTools', () => {
 
   it('changes nothing in a dry run', async () => {
     const { call, file, template } = await setup({ dryRun: true });
-    expect(await call('monitor_group', { group_id: FAMILY })).toBe(`Dry run: would monitor "Família" (${FAMILY}). Nothing was changed.`);
-    expect(await call('set_direct_messages', { enabled: false })).toContain('Dry run: would stop reading');
+    expect(await call('monitor_chat', { chat_id: FAMILY })).toBe(`Dry run: would monitor "Família" (${FAMILY}). Nothing was changed.`);
+    expect(await call('set_direct_messages', { enabled: true })).toContain('Dry run: would read every one-to-one conversation');
     expect(await readFile(file, 'utf8')).toBe(template);
   });
 });

@@ -22,9 +22,11 @@ describe('parseConfig', () => {
     expect(parseConfig({ agent: { name: 'Ane', settings_tools: false } }, location).agent.settingsTools).toBe(false);
     expect(config.cli).toEqual({ allow: [], deny: [], scope: 'commands', timeoutSeconds: 60 });
     expect(config.agent.workingReaction).toBe('✨');
+    expect(config.agent.streamDeleted).toBe(true);
     expect(parseConfig({ agent: { name: 'Ane', working_reaction: '' } }, location).agent.workingReaction).toBe('');
     expect(config.routing).toEqual({
-      directMessages: true,
+      directMessages: false,
+      directAllowlist: [],
       groupAllowlist: [],
       autoReplyChats: [],
       debounceSeconds: 15,
@@ -60,6 +62,13 @@ describe('parseConfig', () => {
     expect(() => parseConfig({}, location)).toThrow(/agent.name is required/);
     expect(() => parseConfig({ agent: { name: 'a' } }, location)).toThrow(ConfigError);
     expect(() => parseConfig({ agent: { name: 'Ane Maria' } }, location)).toThrow(ConfigError);
+  });
+
+  it('accepts only contact JIDs in the direct allowlist', () => {
+    const routing = (direct_allowlist: string[]) => parseConfig({ agent: { name: 'Ane' }, routing: { direct_allowlist } }, location).routing;
+    expect(routing(['5521999990001@s.whatsapp.net', '86088878149676@lid']).directAllowlist).toHaveLength(2);
+    expect(() => routing(['Carol'])).toThrow(/direct_allowlist takes contact JIDs/);
+    expect(() => routing(['120363000000000002@g.us'])).toThrow(/direct_allowlist takes contact JIDs/);
   });
 
   it('accepts only group JIDs in the allowlist', () => {

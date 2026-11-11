@@ -15,7 +15,7 @@ import type { Action, Batch, ChatMessage, Decision } from './types.js';
 import { type CallContext, NO_USAGE, PERIOD_NAMES, type UsageLedger, addUsage, formatMoney } from './usage.js';
 import { errorMessage } from './util.js';
 import type { WacliClient } from './wacli.js';
-import { fromStoredMessage, fromWebhookPayload } from './whatsapp.js';
+import { chatKind, fromStoredMessage, fromWebhookPayload } from './whatsapp.js';
 
 const MAX_BATCH_SIZE = 30;
 /** Images and audio read per batch, and how many at a time. */
@@ -80,6 +80,11 @@ export class Agent {
     const message = fromWebhookPayload(payload);
     if (message === null) return;
     const { state, log } = this.deps;
+    // A deletion for everyone arrives as an empty message with the ID of the one deleted.
+    if (message.revoked) {
+      this.noteDeleted(message);
+      return;
+    }
     // A message can arrive first without content (e.g. only the group key it carries) and again,
     // with the same ID, once wacli has its text. Only messages with content count as seen.
     if (message.text.trim() === '' && message.mediaType === '') {
@@ -110,6 +115,30 @@ export class Agent {
     this.deps.events?.onQueued?.();
     this.batcher.add({ ...message, kind: route.kind });
     if (route.kind === 'command') this.react(message);
+  }
+
+  /**
+   * Puts a message someone else deleted for everyone in the stream (agent.stream_deleted). It
+   * never reaches the model, whatever the chat; the owner's own deletions are left alone.
+   */
+  private noteDeleted(message: ChatMessage): void {
+    const { config, state, log } = this.deps;
+    if (!config.agent.streamDeleted || message.fromMe || chatKind(message.chat) === 'other') return;
+    try {
+      const original = state.messagesById(message.chat, [message.id])[0];
+      if (original?.fromMe === true) return;
+      const chatName = message.chatName || state.chatName(message.chat);
+      if (state.recordDeleted({ chat: message.chat, chatName, id: message.id }, this.now()) === undefined) return;
+      log.info('message deleted', {
+        chat: message.chat,
+        chatName: chatName || undefined,
+        id: message.id,
+        sender: original?.senderName || message.senderName || message.sender || undefined,
+        kept: original !== undefined && (original.text !== '' || original.media !== ''),
+      });
+    } catch (error) {
+      log.warn('could not record a deleted message', { chat: message.chat, error: errorMessage(error) });
+    }
   }
 
   /** Shows the owner the command was received: the working reaction, removed once it is handled. */
@@ -266,6 +295,7 @@ export class Agent {
       agentName: agent.name,
       homeChat: agent.homeChat,
       directMessages: routing.directMessages,
+      directAllowlist: routing.directAllowlist,
       groupAllowlist: routing.groupAllowlist,
       maxMessageAgeMinutes: routing.maxMessageAgeMinutes,
     };
