@@ -137,6 +137,9 @@ describe('LogRenderer', () => {
     expect(await r.render(entry('message deleted', { chat: BOB, id: 'D2', kept: false }))).toBe(
       `12:00:00  🗑 ${BOB.split('@')[0]} deleted a message (its text was not kept)`,
     );
+    // In bold red, as in the stream.
+    const colored = new LogRenderer(config, { all: false, text: true, verbose: false, color: true }, lookup);
+    expect(await colored.render(entry('message deleted', { chat: BOB, id: 'D3', kept: true }))).toContain('\u001b[1m\u001b[31m🗑');
   });
 
   it('shows the cost of the day before', async () => {

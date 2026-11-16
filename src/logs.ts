@@ -208,7 +208,8 @@ export class LogRenderer {
         this.remember(f);
         const where = chatKind(chat) === 'group' ? `${this.chatLabel(chat)} · ${this.who(f)}` : this.chatLabel(chat);
         body = `🗑 ${where} deleted a message${f.kept === false ? ' (its text was not kept)' : ', in the stream'}`;
-        color = paint.yellow;
+        // Red, as in the stream.
+        color = (text) => paint.bold(paint.red(text));
         break;
       }
       case 'settings changed': {
