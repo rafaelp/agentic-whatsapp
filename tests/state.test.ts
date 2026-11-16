@@ -230,6 +230,17 @@ describe('AgentState', () => {
     expect(state.highlightsAfter(0)).toEqual([{ id, at: NOW, chat: FAMILY, chatName: 'Família', ids: ['D1'], text: '', kind: 'deleted' }]);
   });
 
+  it('finds a message by its ID in any chat, the one in the given chat first', () => {
+    const state = new AgentState(Store.open(null));
+    state.recordMessage(message({ chat: BOB, id: 'F1', text: 'oi' }), queued, NOW);
+    state.recordMessage(message({ chat: FAMILY, id: 'F2', text: 'no grupo' }), queued, NOW);
+    state.recordMessage(message({ chat: BOB, id: 'F2', text: 'direto' }), queued, NOW);
+    expect(state.findMessage('F1', FAMILY)).toMatchObject({ chat: BOB, id: 'F1', text: 'oi', fromMe: false });
+    expect(state.findMessage('F2', FAMILY)).toMatchObject({ chat: FAMILY, text: 'no grupo' });
+    expect(state.findMessage('F2', BOB)).toMatchObject({ chat: BOB, text: 'direto' });
+    expect(state.findMessage('GONE', BOB)).toBeUndefined();
+  });
+
   it('puts transcripts in the stream, with why one is missing', () => {
     const state = new AgentState(Store.open(null));
     const done = state.recordTranscript({ chat: BOB, chatName: 'Bob', id: 'V1' }, NOW);

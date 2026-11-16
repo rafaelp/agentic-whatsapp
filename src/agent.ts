@@ -150,17 +150,23 @@ export class Agent {
   /**
    * Puts a message someone else deleted for everyone in the stream (agent.stream_deleted). It
    * never reaches the model, whatever the chat; the owner's own deletions are left alone.
+   *
+   * wacli gives a deletion the chat and FromMe of whoever deleted it: FromMe is always true, and
+   * someone else's deletion in a one-to-one chat comes in the owner's own chat. The deleted
+   * message, when the agent was given it, says which chat it was in and who sent it.
    */
   private noteDeleted(message: ChatMessage): void {
     const { config, state, log } = this.deps;
-    if (!config.agent.streamDeleted || message.fromMe || chatKind(message.chat) === 'other') return;
+    if (!config.agent.streamDeleted) return;
     try {
-      const original = state.messagesById(message.chat, [message.id])[0];
-      if (original?.fromMe === true) return;
-      const chatName = message.chatName || state.chatName(message.chat);
-      if (state.recordDeleted({ chat: message.chat, chatName, id: message.id }, this.now()) === undefined) return;
+      const original = state.findMessage(message.id, message.chat);
+      if (original === undefined ? message.fromMe : original.fromMe) return;
+      const chat = original?.chat ?? message.chat;
+      if (chatKind(chat) === 'other') return;
+      const chatName = (chat === message.chat ? message.chatName : '') || state.chatName(chat);
+      if (state.recordDeleted({ chat, chatName, id: message.id }, this.now()) === undefined) return;
       log.info('message deleted', {
-        chat: message.chat,
+        chat,
         chatName: chatName || undefined,
         id: message.id,
         sender: original?.senderName || message.senderName || message.sender || undefined,

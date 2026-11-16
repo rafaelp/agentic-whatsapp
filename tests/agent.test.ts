@@ -480,6 +480,27 @@ describe('Agent', () => {
     expect(log.entries.at(-1)?.fields).toMatchObject({ id: 'D2', kept: false });
   });
 
+  it('finds where a deletion happened as wacli reports it: FromMe, and one-to-one in the owner\'s own chat', async () => {
+    const OWNER = '5521999990000@s.whatsapp.net';
+    const { state, log, deliver } = await setup([], { routing: { direct_messages: false, group_allowlist: [] } });
+    await deliver(payload({ Chat: BOB, ChatName: 'Bob', ID: 'W1', Text: 'segredo' }));
+    await deliver(payload({ Chat: OWNER, ChatName: 'Owner', ID: 'W1', SenderJID: BOB, FromMe: true, Text: '', Revoked: true }));
+    await deliver(payload({ Chat: FAMILY, ChatName: 'Família', ID: 'W2', Text: 'oi' }));
+    await deliver(payload({ Chat: FAMILY, ID: 'W2', SenderJID: BOB, FromMe: true, Text: '', Revoked: true }));
+    // The owner's own deletions, in a one-to-one chat and before the agent saw the message.
+    await deliver(payload({ Chat: BOB, ID: 'W3', SenderJID: OWNER, FromMe: true, Text: 'oi' }));
+    await deliver(payload({ Chat: BOB, ID: 'W3', SenderJID: OWNER, FromMe: true, Text: '', Revoked: true }));
+    await deliver(payload({ Chat: BOB, ID: 'W4', SenderJID: OWNER, FromMe: true, Text: '', Revoked: true }));
+    expect(state.recentHighlights(5).map((entry) => [entry.kind, entry.chat, entry.chatName, entry.ids])).toEqual([
+      ['deleted', BOB, 'Bob', ['W1']],
+      ['deleted', FAMILY, 'Família', ['W2']],
+    ]);
+    expect(log.entries.filter((entry) => entry.message === 'message deleted').map((entry) => entry.fields)).toEqual([
+      { chat: BOB, chatName: 'Bob', id: 'W1', sender: 'Bob', kept: true },
+      { chat: FAMILY, chatName: 'Família', id: 'W2', sender: 'Bob', kept: true },
+    ]);
+  });
+
   it('leaves the owner\'s own deletions alone, and does nothing with stream_deleted off', async () => {
     const { state, deliver } = await setup();
     await deliver(payload({ Chat: FAMILY, ID: 'O1', FromMe: true, Text: '@ane oi' }));

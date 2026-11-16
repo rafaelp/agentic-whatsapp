@@ -313,19 +313,21 @@ export class AgentState {
         chat,
         id,
       );
-      if (row === undefined) return [];
-      return [
-        {
-          id,
-          sender: text(row.sender),
-          senderName: text(row.sender_name),
-          fromMe: num(row.from_me) === 1,
-          media: text(row.media),
-          text: text(row.text),
-          mediaText: text(row.media_text),
-        },
-      ];
+      return row === undefined ? [] : [storedTextOf(row)];
     });
+  }
+
+  /**
+   * The stored message with this ID in any chat, the one in `chat` first, for an event whose chat
+   * cannot be trusted; undefined when the agent was never given it.
+   */
+  findMessage(id: string, chat: string): (StoredText & { chat: string }) | undefined {
+    const row = this.store.get(
+      'SELECT chat, id, sender, sender_name, from_me, media, text, media_text FROM messages WHERE id = ? ORDER BY chat = ? DESC, received_at DESC LIMIT 1',
+      id,
+      chat,
+    );
+    return row === undefined ? undefined : { ...storedTextOf(row), chat: text(row.chat) };
   }
 
   /** Whether the agent sent the WhatsApp message with this ID. */
@@ -448,6 +450,18 @@ export class AgentState {
 
 function outgoingKey(chat: string, text: string): string {
   return `${chat}\n${text.trim()}`;
+}
+
+function storedTextOf(row: Row): StoredText {
+  return {
+    id: text(row.id),
+    sender: text(row.sender),
+    senderName: text(row.sender_name),
+    fromMe: num(row.from_me) === 1,
+    media: text(row.media),
+    text: text(row.text),
+    mediaText: text(row.media_text),
+  };
 }
 
 function highlightOf(row: Row): Highlight {

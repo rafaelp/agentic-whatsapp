@@ -57,7 +57,9 @@ Every version published to npm has a matching `v` tag and GitHub release with th
 - `routing.direct_allowlist`: the one-to-one chats whose messages reach the model. "follow Carol" in
   the home chat adds one, with the `monitor_chat` tool, which follows groups too.
 - `agent.stream_deleted` (on by default): when someone deletes a message for everyone, the stream
-  shows what it said, in any chat and without calling the model.
+  shows what it said, in any chat and without calling the model. The chat and sender come from the
+  deleted message itself, since wacli reports every deletion as the owner's, and a one-to-one one in
+  the owner's own chat.
 - Scheduled tasks: "tomorrow at 9 tell Carol she needs to buy juice" in the home chat schedules a
   task with new settings tools (`schedule_task`, `list_tasks`, `cancel_task`). When it is due, the
   model gets it as your command in the chat it is about, so the reply goes there, and it can do
