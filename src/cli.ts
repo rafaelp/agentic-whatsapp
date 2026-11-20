@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { createInterface } from 'node:readline/promises';
+import { Writable } from 'node:stream';
 import { parseArgs } from 'node:util';
 import { AGENT_NAME_PATTERN, ConfigError, defaultConfigPath, loadConfig } from './config.js';
 import { createEngine, engineLabel } from './engine.js';
@@ -28,6 +30,7 @@ import {
   uninstall,
 } from './service.js';
 import { logs } from './logs.js';
+import { describePush, pushSetup, type SetupIo, sendPushover } from './push.js';
 import { stream } from './stream.js';
 import { configTemplate, instructionsTemplate } from './templates.js';
 import { systemTimeZone } from './time.js';
@@ -52,6 +55,8 @@ Commands:
   status      Show the service, today's activity and recent errors
   stream      What Ane highlighted as your instructions ask, and each day's cost at 1 am, live; clears the screen first (--no-text, --no-clear, --lines N)
   logs        Watch everything the agent does, live (--all, --no-text, --lines N, --verbose; --raw for the raw log)
+  push-setup  Ask for your Pushover user key and API token, check them and save them in [push]
+  push-test   Send a test push through Pushover, as set in [push]
   costs       Tokens and costs of today, this week, this month (--days N, --by day|chat|model|purpose, --json)
   mcp         Manage the MCP servers the agent may use (list, add, show, tools, scope, enable, disable, remove)
   skills      Manage the agent's skills (list, add, show, scope, enable, disable, remove)
@@ -165,6 +170,29 @@ async function main(argv: string[]): Promise<number> {
         color: process.stdout.isTTY === true && process.env.NO_COLOR === undefined,
       });
       return 0;
+    case 'push-setup': {
+      const config = await loadConfig(configFile);
+      const io = terminalIo();
+      try {
+        return (await pushSetup(config, io)) ? 0 : 1;
+      } finally {
+        io.close();
+      }
+    }
+    case 'push-test': {
+      const config = await loadConfig(configFile);
+      if (!config.push.enabled) {
+        process.stderr.write('Set pushover_user and pushover_token in [push] first\n');
+        return 1;
+      }
+      const result = await sendPushover(config.push, { title: config.agent.name, text: 'Test push from agentic-whatsapp: pushes reach you.' });
+      if (!result.ok) {
+        process.stderr.write(`Push failed: ${result.error}\n`);
+        return 1;
+      }
+      print(['Push sent. Check your phone.']);
+      return 0;
+    }
     case 'costs': {
       const by = values.by;
       if (by !== 'day' && by !== 'chat' && by !== 'model' && by !== 'purpose') {
@@ -264,6 +292,38 @@ Next steps:
   return 0;
 }
 
+/** Questions on the terminal, through one reader for them all; a secret answer is not echoed. */
+function terminalIo(): SetupIo & { close: () => void } {
+  const tty = process.stdin.isTTY === true;
+  let muted = false;
+  // readline echoes what is typed through its output; muting it hides a secret.
+  const output = new Writable({
+    write(chunk, encoding, done) {
+      if (!muted) process.stdout.write(chunk, encoding);
+      done();
+    },
+  });
+  const lines = createInterface({ input: process.stdin, output, terminal: tty });
+  // The iterator keeps lines that arrive before their question, as piped input does.
+  const answers = lines[Symbol.asyncIterator]();
+  return {
+    write: (line) => process.stdout.write(`${line}\n`),
+    ask: async (question, options = {}) => {
+      process.stdout.write(question);
+      muted = options.secret === true && tty;
+      try {
+        const next = await answers.next();
+        return next.done === true ? '' : next.value;
+      } finally {
+        // A muted Enter, or piped input, leaves the cursor after the question.
+        if (muted || !tty) process.stdout.write('\n');
+        muted = false;
+      }
+    },
+    close: () => lines.close(),
+  };
+}
+
 async function check(configFile: string, callModel: boolean): Promise<number> {
   let failures = 0;
   const report = (ok: boolean, label: string, detail: string) => {
@@ -331,6 +391,7 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
     store.close();
   }
   report(true, 'database', config.paths.database);
+  report(true, 'push', describePush(config.push));
 
   const kinds = [config.media.images && 'images described', config.media.audio && 'audio transcribed'].filter(Boolean);
   if (kinds.length === 0) report(true, 'media', 'off: the model sees only the type of images and audio');
@@ -378,7 +439,7 @@ async function check(configFile: string, callModel: boolean): Promise<number> {
   }
 
   if (callModel) {
-    const decider = createEngine(engine, config.paths.stateDir, systemPrompt(config.agent));
+    const decider = createEngine(engine, config.paths.stateDir, systemPrompt(config.agent, config.push));
     try {
       await decider.prepare();
       const started = Date.now();

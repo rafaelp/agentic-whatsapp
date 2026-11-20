@@ -123,6 +123,26 @@ describe('executePlan', () => {
     expect(log.entries.find((entry) => entry.message === 'highlight')?.fields).toEqual({ chat: BOB, chatName: 'Bob', messages: 1 });
   });
 
+  it('pushes what goes to the home chat, before sending it, even when the send fails', async () => {
+    const { wacli, run } = await runtime();
+    const pushed: string[] = [];
+    const push = { homeChat: HOME, send: async (text: string) => void pushed.push(text) };
+    wacli.failSends = true;
+    await executePlan(
+      [
+        { kind: 'send', to: HOME, text: 'Lembrete: pagar o boleto', purpose: 'reply' },
+        { kind: 'send', to: BOB, text: 'Bob, precisa comprar suco!', purpose: 'reply' },
+        { kind: 'log', text: 'sem home chat', reason: 'agent.home_chat is not set' },
+      ],
+      { ...run, push },
+    );
+    expect(pushed).toEqual(['Lembrete: pagar o boleto', 'sem home chat']);
+
+    const dry = await runtime({ dryRun: true });
+    await executePlan([{ kind: 'send', to: HOME, text: 'resumo', purpose: 'notify' }, { kind: 'log', text: 'x', reason: 'y' }], { ...dry.run, push });
+    expect(pushed).toHaveLength(2);
+  });
+
   it('logs a failed send and carries on', async () => {
     const { wacli, state, log, run } = await runtime();
     wacli.failSends = true;

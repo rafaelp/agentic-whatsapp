@@ -197,6 +197,22 @@ describe('parseConfig', () => {
     expect(() => parseConfig({ agent: { name: 'Ane' }, hooks: { name: 'x' } }, location)).toThrow(/\[\[hooks\]\] must be tables/);
   });
 
+  it('reads [push]: off without Pushover keys, scheduled tasks by default', () => {
+    const makeConfig = (sections: Record<string, unknown> = {}) => parseConfig({ agent: { name: 'Ane' }, ...sections }, location);
+    expect(makeConfig().push).toEqual({ enabled: false, user: '', token: '', send: ['tasks'], priority: 0, sound: '' });
+    expect(makeConfig({ push: { pushover_user: ' u1 ', pushover_token: 't1', send: ['notify', 'alerts', 'notify'], priority: -1, sound: 'magic' } }).push).toEqual({
+      enabled: true,
+      user: 'u1',
+      token: 't1',
+      send: ['notify', 'alerts'],
+      priority: -1,
+      sound: 'magic',
+    });
+    expect(() => makeConfig({ push: { pushover_user: 'u1' } })).toThrow('set both pushover_user and pushover_token');
+    expect(() => makeConfig({ push: { send: ['sms'] } })).toThrow('push.send takes "tasks", "notify", "alerts", got "sms"');
+    expect(() => makeConfig({ push: { priority: 2 } })).toThrow('push.priority must be a whole number from -2 to 1');
+  });
+
   it('validates the time zone and the home chat', () => {
     expect(() => parseConfig({ agent: { name: 'Ane', timezone: 'Mars/Base' } }, location)).toThrow(/time zone/);
     expect(() => parseConfig({ agent: { name: 'Ane', home_chat: 'Ane' } }, location)).toThrow(/JIDs/);

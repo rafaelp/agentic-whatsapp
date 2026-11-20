@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import type { Logger } from './log.js';
+import type { Pusher } from './push.js';
 import { errorMessage } from './util.js';
 
 export type Notifier = (title: string, message: string) => void;
@@ -7,11 +8,13 @@ export type Notifier = (title: string, message: string) => void;
 /**
  * Native macOS notification through osascript. The text goes in argv, so it needs no
  * AppleScript escaping. Every notification is logged; when disabled, or outside macOS,
- * it is only logged.
+ * it is only logged. With `push`, it also goes to the owner's phone, enabled or not.
  */
-export function createNotifier(log: Logger, enabled: boolean): Notifier {
+export function createNotifier(log: Logger, enabled: boolean, push?: Pusher): Notifier {
   return (title, message) => {
     log.warn(`notification: ${title}`, { message });
+    // A pusher never rejects.
+    if (push !== undefined) void push({ title, text: message });
     if (!enabled || process.platform !== 'darwin') return;
     execFile(
       '/usr/bin/osascript',

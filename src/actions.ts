@@ -82,6 +82,11 @@ export interface ActionRuntime {
   log: Logger;
   /** The batch these steps answer, for the database. */
   batchId?: number;
+  /**
+   * Also sends what goes to the owner as a push, when given: anything sent to the home chat,
+   * replies to a command there included, and notifications only logged for lack of one.
+   */
+  push?: { homeChat: string; send: (text: string) => Promise<void> };
 }
 
 export async function executePlan(plan: readonly PlannedStep[], runtime: ActionRuntime): Promise<void> {
@@ -96,6 +101,8 @@ export async function executePlan(plan: readonly PlannedStep[], runtime: ActionR
           state.recordSent({ ...record, status: 'dry_run' });
           break;
         }
+        // Before WhatsApp, so a push still goes when the send fails, and its text has no prefix.
+        if (runtime.push !== undefined && step.to === runtime.push.homeChat) await runtime.push.send(step.text);
         state.noteOutgoing(step.to, text);
         try {
           const id = await runtime.wacli.sendText(step.to, text);
@@ -110,6 +117,7 @@ export async function executePlan(plan: readonly PlannedStep[], runtime: ActionR
       case 'log':
         state.recordSent({ batchId, chat: '', purpose: 'notify', text: step.text, status: 'logged', error: step.reason });
         log.info('notification for the owner', { reason: step.reason, text: step.text });
+        if (!runtime.dryRun) await runtime.push?.send(step.text);
         break;
       case 'write_instructions':
         if (runtime.dryRun) {

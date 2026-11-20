@@ -66,13 +66,30 @@ export class ConfigFile {
       (update.groupAllowlist === undefined || sameList(routing.groupAllowlist, update.groupAllowlist)) &&
       (update.autoReplyChats === undefined || sameList(routing.autoReplyChats, update.autoReplyChats));
     if (!applied) throw new ConfigError(`Could not change [routing] in ${this.file}; edit it by hand`);
-    if (text === previous) return config;
+    await this.replace(previous, text);
+    return config;
+  }
 
+  /** Sets the Pushover keys of [push] and returns the new config, checked like updateRouting. */
+  async updatePushKeys(keys: { user: string; token: string }): Promise<Config> {
+    const previous = await readFile(this.file, 'utf8');
+    let text = setTomlKey(previous, 'push', 'pushover_user', JSON.stringify(keys.user));
+    text = setTomlKey(text, 'push', 'pushover_token', JSON.stringify(keys.token));
+    const config = configFromText(text, this.location);
+    if (config.push.user !== keys.user || config.push.token !== keys.token) {
+      throw new ConfigError(`Could not change [push] in ${this.file}; edit it by hand`);
+    }
+    await this.replace(previous, text);
+    return config;
+  }
+
+  /** Writes the new text, keeping the previous version in the history. */
+  private async replace(previous: string, text: string): Promise<void> {
+    if (text === previous) return;
     await mkdir(this.historyDir, { recursive: true, mode: 0o700 });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     await writeFile(join(this.historyDir, `${stamp}.toml`), previous, { mode: 0o600 });
     await writeFileAtomic(this.file, text);
-    return config;
   }
 }
 

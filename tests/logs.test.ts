@@ -142,6 +142,16 @@ describe('LogRenderer', () => {
     expect(await colored.render(entry('message deleted', { chat: BOB, id: 'D3', kept: true }))).toContain('\u001b[1m\u001b[31m🗑');
   });
 
+  it('shows pushes sent and pushes that failed', async () => {
+    const r = renderer();
+    const sent = entry('push sent', { title: 'Ane' });
+    expect(r.wants(sent)).toBe(true);
+    expect(await r.render(sent)).toBe('12:00:00  📲 push sent: Ane');
+    expect(await r.render(entry('push failed', { error: 'Pushover answered 400: user key is invalid' }, 'warn'))).toBe(
+      '12:00:00  ✗ push failed: Pushover answered 400: user key is invalid',
+    );
+  });
+
   it('shows the cost of the day before', async () => {
     const r = renderer();
     expect(r.wants(entry('daily cost', { day: '2026-11-09', calls: 37, cost: 0.4213 }))).toBe(true);

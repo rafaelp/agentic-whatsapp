@@ -19,6 +19,19 @@ describe('systemPrompt', () => {
   });
 });
 
+describe('systemPrompt with [push]', () => {
+  const pushed = (push: Record<string, unknown>) => makeConfig({ push: { pushover_user: 'u'.repeat(30), pushover_token: 'a'.repeat(30), ...push } }).push;
+
+  it('says what reaches the owner as a push, and how to send one, only when pushes are on', () => {
+    expect(systemPrompt(config.agent, config.push)).not.toContain('push');
+    const tasks = systemPrompt(config.agent, pushed({}));
+    expect(tasks).toContain("What a scheduled task tells the owner when it runs, a notify or a reply in the home chat, also reaches the owner's phone as a push notification.");
+    expect(tasks).toContain('schedule a task for the owner a minute ahead if you have the schedule_task tool');
+    expect(systemPrompt(config.agent, pushed({ send: ['notify'] }))).toContain('Every message to the owner, a notify or a reply in the home chat, also reaches their phone as a push notification.');
+    expect(systemPrompt(config.agent, pushed({ send: ['alerts'] }))).not.toContain('push');
+  });
+});
+
 describe('buildTaskPrompt', () => {
   const task = { id: 7, task: 'Dizer ao Bob que precisa comprar suco', createdAt: NOW, dueAt: new Date('2026-11-11T12:00:00Z') };
 

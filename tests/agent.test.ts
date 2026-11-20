@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { Agent } from '../src/agent.js';
 import { InstructionsStore } from '../src/instructions.js';
 import { MediaProcessor } from '../src/media.js';
+import type { PushMessage } from '../src/push.js';
 import { cliServer as cliServerFor } from '../src/commands.js';
 import { settingsServer as settingsServerFor } from '../src/settings-mcp.js';
 import { ConfigFile, LiveRouting } from '../src/settings.js';
@@ -786,14 +787,18 @@ describe('Agent', () => {
       const instructions = new InstructionsStore(join(dir, 'instructions.md'), join(dir, 'history'));
       const log = new MemoryLogger();
       const settingsServer = settingsServerFor(config, { dryRun: false, cli: '/x/cli.js' });
+      const pushes: PushMessage[] = [];
+      const push = async (message: PushMessage) => {
+        pushes.push(message);
+      };
       let now = NOW;
-      const agent = new Agent({ config, wacli, decider, state, usage, tasks, settingsServer, instructions, log, now: () => now });
+      const agent = new Agent({ config, wacli, decider, state, usage, tasks, settingsServer, instructions, push, log, now: () => now });
       const at = async (date: Date) => {
         now = date;
         agent.runDueTasks();
         await agent.idle();
       };
-      return { agent, wacli, decider, store, state, tasks, log, at };
+      return { agent, wacli, decider, store, state, tasks, log, pushes, at };
     }
 
     it('does a task when it is due, in the chat it is about, and records what it did', async () => {
@@ -830,6 +835,41 @@ describe('Agent', () => {
       expect(decider.prompts[0]).toContain(`{"id":"${HOME}","name":null,"type":"group","reply_allowed":true}`);
       expect(decider.prompts[0]).toContain('(no earlier messages)');
       expect(wacli.sent).toEqual([{ to: HOME, text: '🤖 Ane: Lembrete: pagar o boleto' }]);
+    });
+
+    it('pushes what a task tells the owner, and a task that failed, but not its replies to others', async () => {
+      const reminder = await setupTasks([{ type: 'reply', text: 'Lembrete: pagar o boleto' }]);
+      reminder.tasks.schedule({ dueAt: NOW, task: 'Lembrar de pagar o boleto', chat: '', chatName: '' }, NOW);
+      await reminder.at(NOW);
+      expect(reminder.pushes).toEqual([{ title: 'Ane', text: 'Lembrete: pagar o boleto' }]);
+
+      const toBob = await setupTasks();
+      toBob.tasks.schedule({ dueAt: NOW, task: 'Dizer ao Bob…', chat: BOB, chatName: 'Bob' }, NOW);
+      await toBob.at(NOW);
+      expect(toBob.wacli.sent).toHaveLength(1);
+      expect(toBob.pushes).toEqual([]);
+
+      const failed = await setupTasks();
+      failed.decider.error = new Error('quota exceeded');
+      failed.tasks.schedule({ dueAt: NOW, task: 'Dizer ao Bob…', chat: BOB, chatName: 'Bob' }, NOW);
+      await failed.at(NOW);
+      expect(failed.pushes).toEqual([{ title: 'Ane', text: '⚠️ Scheduled task failed (2026-11-10 12:00, Bob): quota exceeded\nDizer ao Bob…' }]);
+    });
+
+    it('pushes other messages to the owner only with push.send = ["notify"]', async () => {
+      const deliver = async (setup: Awaited<ReturnType<typeof setupTasks>>) => {
+        setup.agent.handleEvent(payload({ Text: 'me passa o endereço?' }));
+        setup.agent.flushPending();
+        await setup.agent.idle();
+      };
+      const tasksOnly = await setupTasks([{ type: 'notify', text: 'Bob pediu o endereço' }]);
+      await deliver(tasksOnly);
+      expect(tasksOnly.wacli.sent).toHaveLength(1);
+      expect(tasksOnly.pushes).toEqual([]);
+
+      const everything = await setupTasks([{ type: 'notify', text: 'Bob pediu o endereço' }], { push: { send: ['notify'] } });
+      await deliver(everything);
+      expect(everything.pushes).toEqual([{ title: 'Ane', text: 'Bob pediu o endereço' }]);
     });
 
     it('skips cancelled tasks, and tells the owner about one missed while the agent was off', async () => {

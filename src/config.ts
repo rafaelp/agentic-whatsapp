@@ -63,6 +63,29 @@ export interface ServiceConfig {
   notify: boolean;
 }
 
+/** What goes to the owner's phone as a push. */
+export type PushKind = 'tasks' | 'notify' | 'alerts';
+const PUSH_KINDS: readonly PushKind[] = ['tasks', 'notify', 'alerts'];
+
+/** Push notifications through Pushover. */
+export interface PushConfig {
+  /** Both keys are set. */
+  enabled: boolean;
+  /** The owner's Pushover user (or group) key. */
+  user: string;
+  /** The API token of a Pushover application. */
+  token: string;
+  /**
+   * "tasks": what scheduled tasks tell the owner, reminders included, and a task that could not
+   * run. "notify": everything the agent tells the owner. "alerts": WhatsApp sync or the model failing.
+   */
+  send: PushKind[];
+  /** Pushover priority, -2 (no alert) to 1 (high, past quiet hours). */
+  priority: number;
+  /** A Pushover sound name; empty: the user's default. */
+  sound: string;
+}
+
 export interface CostsConfig {
   /** Label of the currency the prices are in. */
   currency: string;
@@ -163,6 +186,7 @@ export interface Config {
   engine: EngineConfig;
   wacli: WacliConfig;
   service: ServiceConfig;
+  push: PushConfig;
   costs: CostsConfig;
   storage: StorageConfig;
   media: MediaConfig;
@@ -329,6 +353,25 @@ export function parseConfig(
   };
   serviceSection.finish();
 
+  const pushSection = root.section('push');
+  const pushUser = pushSection.string('pushover_user', '').trim();
+  const pushToken = pushSection.string('pushover_token', '').trim();
+  if ((pushUser === '') !== (pushToken === '')) {
+    throw new ConfigError('push: set both pushover_user and pushover_token, or neither');
+  }
+  const push: PushConfig = {
+    enabled: pushUser !== '',
+    user: pushUser,
+    token: pushToken,
+    send: [...new Set(pushSection.strings('send', ['tasks']))] as PushKind[],
+    priority: pushSection.integer('priority', 0, -2, 1),
+    sound: pushSection.string('sound', '').trim(),
+  };
+  for (const kind of push.send) {
+    if (!PUSH_KINDS.includes(kind)) throw new ConfigError(`push.send takes ${PUSH_KINDS.map((k) => `"${k}"`).join(', ')}, got ${JSON.stringify(kind)}`);
+  }
+  pushSection.finish();
+
   const costsSection = root.section('costs');
   const costs: CostsConfig = {
     currency: costsSection.string('currency', 'USD').trim() || 'USD',
@@ -418,6 +461,7 @@ export function parseConfig(
     engine,
     wacli,
     service,
+    push,
     costs,
     storage,
     media,

@@ -87,6 +87,22 @@ log_keep = 5
 # keeps failing, and when they recover.
 notify = true
 
+[push]
+# Pushes on your phone through Pushover (https://pushover.net): copy your user key from
+# its dashboard and create an application there for its API token. Without both, no push
+# is sent. agentic-whatsapp push-setup asks for both and saves them here; test with:
+# agentic-whatsapp push-test
+# pushover_user = "your user key"
+# pushover_token = "your application's API token"
+# What goes as a push: "tasks" (what scheduled tasks tell you, such as reminders, and a
+# task that could not run), "notify" (everything the agent tells you in the home chat)
+# and "alerts" (WhatsApp sync or the model failing, as the macOS notifications above).
+send = ["tasks"]
+# Pushover priority: -2 (no alert), -1 (quiet), 0 (normal) or 1 (high, past quiet hours).
+priority = 0
+# A Pushover sound, such as "magic" or "none"; empty uses your default.
+sound = ""
+
 [costs]
 # Every model call is stored with its tokens and priced at Gemini API rates. On
 # Antigravity this is what the tokens would cost on the API; your plan is not billed.

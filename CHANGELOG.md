@@ -73,6 +73,12 @@ Every version published to npm has a matching `v` tag and GitHub release with th
   people send you is transcribed, followed chat or not, and `media.audio_transcribe_to` sends the
   transcript to the home chat (`home`, the default), the stream (`stream`) or both. A followed
   chat's audio is transcribed once, for the decision too.
+- Pushes on your phone through Pushover (`[push]`), mainly for reminders: whatever a scheduled task
+  tells you, and a task that could not run, also comes as a push. `push.send` adds everything Ane
+  tells you (`notify`) and the service's alerts (`alerts`); `priority` and `sound` follow
+  Pushover's. `agentic-whatsapp push-setup` asks for the user key and API token, checks them with
+  Pushover and saves them; `push-test` sends a test push, `check` shows the setting and `logs` each
+  push. Ane is told what comes as a push, so asked for a test it schedules a reminder a minute ahead.
 - Ane can answer what it costs: its `get_costs` tool gives every figure of `agentic-whatsapp costs` in
   one call, with today, this week, this month and all time, the limits, and the last days by day,
   chat, model and purpose. `costs --json` and the tool share the same code.

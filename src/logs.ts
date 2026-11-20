@@ -33,6 +33,7 @@ const KNOWN = new Set([
   'dry run: would update the instructions',
   'instructions updated',
   'notification for the owner',
+  'push sent',
   'cost limit reached, skipping',
   'media read',
   'media not read',
@@ -259,6 +260,14 @@ export class LogRenderer {
       case 'notification for the owner':
         body = `🔔 ${this.options.text ? oneLine(asString(f.text)) : 'notification (no home chat set)'}`;
         color = paint.yellow;
+        break;
+      case 'push sent':
+        body = `📲 push sent: ${asString(f.title)}`;
+        color = paint.green;
+        break;
+      case 'push failed':
+        body = `✗ push failed: ${asString(f.error)}`;
+        color = paint.red;
         break;
       case 'model call failed':
         body = `✗ model call failed (${this.chatLabel(chat)}): ${asString(f.error)}`;

@@ -10,6 +10,7 @@ import { InstructionsStore } from './instructions.js';
 import { createLogger, rotateIfLarge } from './log.js';
 import { MediaProcessor } from './media.js';
 import { createNotifier } from './notify.js';
+import { createPusher } from './push.js';
 import { systemPrompt } from './prompt.js';
 import { startReceiver } from './receiver.js';
 import { cliServer } from './commands.js';
@@ -56,7 +57,8 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     stderr: !options.service,
     file: { path: paths.agentLog, maxBytes: service.logMaxBytes, keep: service.logKeep },
   });
-  const notify = createNotifier(log, options.service && service.notify);
+  const push = createPusher(config.push, log);
+  const notify = createNotifier(log, options.service && service.notify, config.push.send.includes('alerts') ? push : undefined);
 
   const wacli = new Wacli(config.wacli.command, config.wacli.store);
   let auth;
@@ -104,7 +106,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
   pruneTimer.unref();
 
   const instructions = new InstructionsStore(paths.instructionsFile, join(paths.stateDir, 'instructions-history'));
-  const engine = createEngine(config.engine, paths.stateDir, systemPrompt(config.agent));
+  const engine = createEngine(config.engine, paths.stateDir, systemPrompt(config.agent, config.push));
   await engine.prepare();
   const reader = mediaReaderOf(engine);
   const readsMedia = config.media.images || config.media.audio;
@@ -138,6 +140,7 @@ export async function runAgent(config: Config, options: RunOptions): Promise<voi
     routing: new LiveRouting({ configFile: paths.configFile, stateDir: paths.stateDir, logDir: paths.logDir }, config.routing, log),
     tasks,
     instructions,
+    push,
     log,
     dryRun: options.dryRun,
     events: {

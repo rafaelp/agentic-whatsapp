@@ -9,6 +9,7 @@ import type { InstructionsStore } from './instructions.js';
 import type { Logger } from './log.js';
 import type { MediaKind, MediaProcessor, MediaResult } from './media.js';
 import { buildPrompt, buildTaskPrompt } from './prompt.js';
+import type { Pusher } from './push.js';
 import { type RoutingRules, routeMessage } from './router.js';
 import type { AgentState } from './state.js';
 import { type Task, type TaskStore, taskResult } from './tasks.js';
@@ -58,6 +59,8 @@ export interface AgentDeps {
   /** The tasks the owner scheduled, run when they are due; absent runs none. */
   tasks?: TaskStore;
   instructions: InstructionsStore;
+  /** Pushover, for what [push] send picks; absent sends no push. */
+  push?: Pusher;
   log: Logger;
   dryRun?: boolean;
   now?: () => Date;
@@ -586,7 +589,7 @@ export class Agent {
         outputTokens: tokens.outputTokens,
         cost: roundCost(cost),
       });
-      await this.execute(decision.actions, context);
+      await this.execute(decision.actions, context, undefined, { task: true });
       tasks.finish(task.id, { status: 'done', result: taskResult(decision.actions, chatName || chat.split('@')[0] || 'the chat') }, this.now());
       await this.warnNearLimits(context);
     } catch (error) {
@@ -603,7 +606,7 @@ export class Agent {
     const what = status === 'missed' ? 'not run' : 'failed';
     const text = `⚠️ Scheduled task ${what} (${formatLocalTime(task.dueAt, zone)}${where}): ${reason}${task.task === '' ? '' : `\n${task.task}`}`;
     const context: ActionContext = { chat: config.agent.homeChat, chatName: '', replyAllowed: false, ownerCommand: false, messageIds: [] };
-    await this.execute([{ type: 'notify', text }], context);
+    await this.execute([{ type: 'notify', text }], context, undefined, { task: true });
   }
 
   /** Stores one run of the engine and logs it; returns its cost. */
@@ -782,8 +785,10 @@ export class Agent {
       });
   }
 
-  private async execute(actions: Action[], context: ActionContext, batchId?: number): Promise<void> {
-    const { config, wacli, state, instructions, log } = this.deps;
+  /** `task`: the actions of a scheduled task, whose messages to the owner [push] can send as a push. */
+  private async execute(actions: Action[], context: ActionContext, batchId?: number, options: { task?: boolean } = {}): Promise<void> {
+    const { config, wacli, state, instructions, log, push } = this.deps;
+    const pushes = push !== undefined && (config.push.send.includes('notify') || (options.task === true && config.push.send.includes('tasks')));
     await executePlan(planActions(actions, context, config.agent.homeChat), {
       wacli,
       state,
@@ -793,6 +798,7 @@ export class Agent {
       dryRun: this.deps.dryRun ?? false,
       log,
       batchId,
+      push: pushes ? { homeChat: config.agent.homeChat, send: (text) => push({ title: config.agent.name, text }) } : undefined,
     });
   }
 

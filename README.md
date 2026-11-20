@@ -299,6 +299,8 @@ While Ane works on a command, the message gets a ✨ reaction, taken off once it
 | `agentic-whatsapp status` | Show the service, today's activity and calls, and recent errors |
 | `agentic-whatsapp stream` | Only the messages Ane highlighted for you, and the cost of each day at 1 am the next morning, live; it clears the screen first (`--no-clear` keeps it), `--no-text` hides message text, `--lines N` sets how many earlier entries to show (10) |
 | `agentic-whatsapp logs` | Watch everything the agent does, live; `--all` adds ignored messages, `--no-text` hides message text, `--lines N` sets the history shown, `--verbose` adds debug lines, `--raw` follows the raw log instead |
+| `agentic-whatsapp push-setup` | Ask for your Pushover user key and API token, check them with Pushover, save them in `[push]` and send a test push |
+| `agentic-whatsapp push-test` | Send a test push through Pushover, as set in `[push]` |
 | `agentic-whatsapp costs` | Tokens and costs of today, this week, this month and all time, with the limits; `--days N`, `--by day\|chat\|model\|purpose`, `--json` |
 | `agentic-whatsapp mcp` | Manage MCP servers: `list`, `add`, `show`, `tools`, `scope`, `enable`, `disable`, `remove` |
 | `agentic-whatsapp skills` | Manage skills: `list`, `add`, `show`, `scope`, `enable`, `disable`, `remove` |
@@ -625,6 +627,33 @@ then shows what it did:
 - With `run --dry-run`, `schedule_task` schedules nothing, and a task that is due sends nothing.
 - With `storage.save_text = false`, a task's text is kept only until it runs.
 
+### Pushes on your phone
+
+A reminder in a WhatsApp chat with yourself is easy to miss. With [Pushover](https://pushover.net),
+whatever a task tells you also comes as a push. You need your user key, at the top of Pushover's
+dashboard, and the API token of an application you create at
+[pushover.net/apps/build](https://pushover.net/apps/build). Then run:
+
+```bash
+agentic-whatsapp push-setup   # asks for both, checks them with Pushover, saves them and sends a test push
+agentic-whatsapp restart
+```
+
+The token is not shown as you type it, and nothing is saved unless Pushover accepts the keys. They
+go in `[push]` of the config file, which also says what goes as a push:
+
+```toml
+[push]
+send = ["tasks"]   # add "notify" for everything Ane tells you, "alerts" for the service's alerts
+priority = 0       # 1 is high priority and sounds past Pushover's quiet hours
+```
+
+`agentic-whatsapp push-test` sends a test push at any time. Ane knows what comes as a push: asked in
+the home chat for a test, it schedules a reminder a minute ahead.
+Everything a task sends to the home chat goes as a push too, before WhatsApp, so a push still
+arrives when the send fails, and so does the message about a task that could not run. A task's
+message to someone else is not pushed. `logs` shows each push, and why one failed.
+
 ## Command-line programs
 
 `[cli]` lists the command-line programs Ane may run for you: any program on your computer, and
@@ -757,6 +786,11 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `service.log_max_mb` | `5` | Rotate `agent.log` above this size. |
 | `service.log_keep` | `5` | Rotated copies of the log to keep. |
 | `service.notify` | `true` | macOS notifications from the background service. |
+| `push.pushover_user` | empty | Your Pushover user key. With `pushover_token`, turns pushes on. See [Pushes on your phone](#pushes-on-your-phone). |
+| `push.pushover_token` | empty | The API token of a Pushover application of yours. |
+| `push.send` | `["tasks"]` | What goes as a push: `tasks` (what scheduled tasks tell you, and a task that could not run), `notify` (everything sent to you in the home chat) and `alerts` (WhatsApp sync or the model failing). |
+| `push.priority` | `0` | Pushover priority, from `-2` (no alert) to `1` (high, past quiet hours). |
+| `push.sound` | empty | A Pushover sound name; empty uses your default. |
 | `costs.currency` | `USD` | Label of the currency the prices are in. |
 | `costs.input_per_million` | model's price | Price of a million input tokens. Gemini 3.8 Flash is known; set it for other models. |
 | `costs.output_per_million` | model's price | Price of a million output tokens, thinking included. |
@@ -827,6 +861,7 @@ agentic-whatsapp/
 │   ├── stream.ts          # agentic-whatsapp stream: the messages Ane highlighted, tasks, daily costs
 │   ├── health.ts          # Failures in a row, notifications, health.json
 │   ├── notify.ts          # macOS notifications
+│   ├── push.ts            # Pushes through Pushover
 │   ├── agent.ts           # Routes, batches and decides, one batch at a time
 │   ├── router.ts          # What reaches the model, and what counts as a command
 │   ├── batcher.ts         # Groups messages per chat

@@ -1,4 +1,4 @@
-import type { AgentConfig } from './config.js';
+import type { AgentConfig, PushConfig } from './config.js';
 import type { Task } from './tasks.js';
 import { formatLocalTime } from './time.js';
 import { hasTools, type ToolSet } from './tools.js';
@@ -9,7 +9,7 @@ import { chatKind } from './whatsapp.js';
  * The agent's rules. Gemini CLI takes them as its system prompt; Antigravity CLI has
  * no override, so they open the user turn there.
  */
-export function systemPrompt(agent: AgentConfig): string {
+export function systemPrompt(agent: AgentConfig, push?: PushConfig): string {
   return `You are ${agent.name}, a personal assistant that watches the WhatsApp account of your owner and acts for them.
 
 # Who you obey
@@ -36,13 +36,26 @@ Each action is one of:
 - {"type": "highlight", "ids": ["..."], "text": "..."}: shows new messages to the owner in their stream, a live feed on their computer, without sending anything. Use it for the messages the instructions ask you to highlight, flag or keep an eye on. "ids" lists the "id" of each new message it is about; "text" says in a few words why they matter.
 
 Return {"actions": []} when nothing needs to happen. Most messages need nothing.
-
+${pushRules(push)}
 # Style
 - Write in ${agent.language}. Be brief: the owner reads you on a phone.
 - When you tell the owner about a message, say who sent it and in which chat.
 - Never write "@" right before your own name.
 - Times are in ${agent.timezone}.
 `;
+}
+
+/** What the model is told about pushes: none of its actions sends one, but some messages also go as one. */
+function pushRules(push: PushConfig | undefined): string {
+  if (push === undefined || !push.enabled) return '';
+  if (push.send.includes('notify')) {
+    return '\nEvery message to the owner, a notify or a reply in the home chat, also reaches their phone as a push notification.\n';
+  }
+  if (!push.send.includes('tasks')) return '';
+  return (
+    "\nWhat a scheduled task tells the owner when it runs, a notify or a reply in the home chat, also reaches the owner's phone as a push notification. " +
+    'No action sends a push by itself: when the owner asks for one, such as a test, schedule a task for the owner a minute ahead if you have the schedule_task tool, and say that its message will come as a push.\n'
+  );
 }
 
 export interface PromptInput {
