@@ -29,6 +29,9 @@ home_chat = ${quote(options.homeChat)}
 # Reaction the agent puts on your commands while it works on them, removed once it is
 # done. "" turns it off.
 working_reaction = "✨"
+# Reaction that replaces it once a command was handled; a command that failed gets none.
+# "" turns it off.
+done_reaction = "✅"
 # Show in agentic-whatsapp stream the messages other people delete for everyone, with
 # what they said. Nothing goes to the model.
 stream_deleted = true

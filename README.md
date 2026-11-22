@@ -227,8 +227,9 @@ The plugin only needs wacli, and works with or without the agent. See the
 | The home chat | Ask it to change what it reads | "follow Carol", "monitor the Family group", "stop following Bob" |
 | The home chat | Ask for something later | "tomorrow at 9 tell Carol she needs to buy juice", "remind me in two hours to call the bank" |
 
-While Ane works on a command, the message gets a ✨ reaction, taken off once it is done
-(`agent.working_reaction`). Only your commands get it, never other people's messages.
+While Ane works on a command, the message gets a ✨ reaction, replaced by ✅ once it is done
+(`agent.working_reaction`, `agent.done_reaction`). A command that failed only loses the ✨. Only
+your commands get them, never other people's messages.
 
 > [!TIP]
 > Type `@ane` as plain text. In a group, WhatsApp may suggest a contact called Ane when you type `@`.
@@ -764,6 +765,7 @@ never passes silently. Changes to `[routing]` apply from the next message; the o
 | `agent.message_prefix` | `🤖 <name>: ` | Prepended to every message it sends, such as `"*@ane*\n"` for a bold name on a line of its own. It may contain `@<name>`: Ane knows its own messages by ID and by this prefix, so your own messages must not start with it. |
 | `agent.stream_deleted` | `true` | Show in `agentic-whatsapp stream` the messages other people delete for everyone, with what they said. Nothing goes to the model. |
 | `agent.working_reaction` | `✨` | Reaction put on each command you send while Ane works on it, and taken off once it is done. `""` turns it off. |
+| `agent.done_reaction` | `✅` | Reaction that replaces the working one once a command was handled. A command that failed gets none. `""` only takes the working reaction off. |
 | `agent.settings_tools` | `true` | Let Ane change `[routing]` when you ask in the home chat. See [Its own settings](#its-own-settings). |
 | `routing.direct_allowlist` | `[]` | One-to-one chats (`…@s.whatsapp.net` or `…@lid`) whose messages are sent to the model. |
 | `routing.direct_messages` | `false` | Send every one-to-one conversation to the model, listed or not. |

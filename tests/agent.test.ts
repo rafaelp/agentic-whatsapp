@@ -420,16 +420,16 @@ describe('Agent', () => {
     expect(log.entries.filter((entry) => entry.message === 'daily cost')).toHaveLength(1);
   });
 
-  it('reacts to the owner\'s commands while it works on them, and takes the reaction off after', async () => {
+  it('reacts to the owner\'s commands while it works on them, then marks them done', async () => {
     const { wacli, decider, deliver } = await setup([{ type: 'notify', text: 'feito' }]);
     await deliver(payload({ Chat: HOME, ID: 'C1', FromMe: true, SenderJID: '5521999990009@s.whatsapp.net', Text: 'resuma o dia' }));
     expect(wacli.reactions).toEqual([
       { chat: HOME, id: 'C1', sender: '5521999990009@s.whatsapp.net', emoji: '✨' },
-      { chat: HOME, id: 'C1', sender: '5521999990009@s.whatsapp.net', emoji: '' },
+      { chat: HOME, id: 'C1', sender: '5521999990009@s.whatsapp.net', emoji: '✅' },
     ]);
     expect(wacli.sent).toHaveLength(1);
 
-    // Other people's messages get no reaction, and a failed decision still takes it off.
+    // Other people's messages get no reaction, and a failed decision takes it off without the done one.
     await deliver(payload({ Chat: FAMILY, ID: 'G1', Text: 'oi' }));
     decider.error = new Error('quota');
     await deliver(payload({ Chat: FAMILY, ID: 'G2', FromMe: true, Text: '@ane resume' }));
@@ -446,6 +446,12 @@ describe('Agent', () => {
     expect(decider.prompts).toHaveLength(0);
     await deliver(payload({ Chat: OTHER_GROUP, FromMe: true, Text: '@ane resume isso' }));
     expect(decider.prompts).toHaveLength(1);
+  });
+
+  it('only takes the working reaction off with done_reaction = ""', async () => {
+    const { wacli, deliver } = await setup([{ type: 'notify', text: 'feito' }], { agent: { done_reaction: '' } });
+    await deliver(payload({ Chat: HOME, ID: 'C1', FromMe: true, Text: 'resuma o dia' }));
+    expect(wacli.reactions.map((reaction) => reaction.emoji)).toEqual(['✨', '']);
   });
 
   it('does not react in a dry run, or with working_reaction = ""', async () => {
@@ -573,7 +579,7 @@ describe('Agent', () => {
         },
       ]);
       expect(wacli.sent).toEqual([{ to: HOME, text: '🤖 Ane: 📎 Boleto.pdf\nSalvei o arquivo nas notas.' }]);
-      expect(wacli.reactions.map((reaction) => reaction.emoji)).toEqual(['✨', '']);
+      expect(wacli.reactions.map((reaction) => reaction.emoji)).toEqual(['✨', '✅']);
       expect(store.get('SELECT purpose, input_tokens FROM calls')).toEqual({ purpose: 'hook', input_tokens: 3_000 });
       expect(store.get('SELECT media_file FROM messages')?.media_file).toBe(file);
       expect(log.entries.find((entry) => entry.message === 'hook')?.fields).toMatchObject({ hook: 'save-pdfs', file: 'Boleto.pdf' });
@@ -601,6 +607,7 @@ describe('Agent', () => {
       failing.hookRunner.error = new Error('notes is not installed');
       await failing.deliver(pdf());
       expect(failing.wacli.sent.map((sent) => sent.text)).toEqual(['🤖 Ane: ⚠️ Hook save-pdfs failed on Boleto.pdf: notes is not installed']);
+      expect(failing.wacli.reactions.map((reaction) => reaction.emoji)).toEqual(['✨', '']);
 
       const dry = await setupHooks({ dryRun: true });
       await dry.deliver(pdf());

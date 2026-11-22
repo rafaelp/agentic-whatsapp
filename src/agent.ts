@@ -190,16 +190,19 @@ export class Agent {
     this.reacting.set(message.id, added);
   }
 
-  private unreact(batch: Batch): void {
-    for (const message of batch.messages) this.unreactMessage(message);
+  /** `done`: the command was handled, so it gets the done reaction; otherwise the reaction just goes. */
+  private unreact(batch: Batch, done: boolean): void {
+    for (const message of batch.messages) this.unreactMessage(message, done);
   }
 
-  private unreactMessage(message: ChatMessage): void {
+  private unreactMessage(message: ChatMessage, done: boolean): void {
     const added = this.reacting.get(message.id);
     if (added === undefined) return;
     this.reacting.delete(message.id);
+    // A person has one reaction per message, so the done reaction replaces the working one.
+    const emoji = done ? this.deps.config.agent.doneReaction : '';
     const removed = added
-      .then(() => this.deps.wacli.sendReaction(message.chat, message.id, message.sender, ''))
+      .then(() => this.deps.wacli.sendReaction(message.chat, message.id, message.sender, emoji))
       .catch((error: unknown) => {
         this.deps.log.warn('could not remove a reaction', { chat: message.chat, id: message.id, error: errorMessage(error) });
       })
@@ -223,22 +226,24 @@ export class Agent {
   private enqueueHooks(message: ChatMessage, hooks: readonly HookConfig[]): void {
     const home = message.chat === this.deps.config.agent.homeChat;
     if (home) this.react(message);
+    let done = true;
     this.queue = this.queue
       .then(async () => {
-        for (const hook of hooks) await this.runHook(hook, message);
+        for (const hook of hooks) if (!(await this.runHook(hook, message))) done = false;
       })
       .catch((error: unknown) => {
+        done = false;
         this.deps.log.error('could not run a hook', { chat: message.chat, error: errorMessage(error) });
       })
       .finally(() => {
-        if (home) this.unreactMessage(message);
+        if (home) this.unreactMessage(message, done);
       });
   }
 
-  /** Downloads the file, runs the hook's skill on it, and tells the owner what came of it. */
-  private async runHook(hook: HookConfig, message: ChatMessage): Promise<void> {
+  /** Downloads the file, runs the hook's skill on it, and tells the owner what came of it; true when it ran. */
+  private async runHook(hook: HookConfig, message: ChatMessage): Promise<boolean> {
     const { config, state, usage, log, wacli, hookRunner } = this.deps;
-    if (hookRunner === undefined) return;
+    if (hookRunner === undefined) return false;
     const home = message.chat === config.agent.homeChat;
     const chatName = message.chatName || state.chatName(message.chat);
     const fields = { chat: message.chat, chatName: chatName || undefined, id: message.id, hook: hook.name };
@@ -249,26 +254,26 @@ export class Agent {
     };
     if (this.deps.dryRun === true) {
       log.info('dry run: would run a hook', fields);
-      return;
+      return false;
     }
     const now = this.now();
     if (usage.callsOn(dayKey(now, config.agent.timezone)) >= config.engine.maxCallsPerDay || usage.limitReached(now) !== undefined) {
       log.info('hook skipped', { ...fields, reason: 'a call or cost limit was reached' });
-      return;
+      return false;
     }
     const skill = this.deps.tools?.skills().find((candidate) => candidate.name === hook.skill && candidate.enabled);
     if (skill === undefined) {
       const reason = `the skill ${hook.skill} is not installed or is disabled`;
       log.warn('hook skipped', { ...fields, reason });
       await tell(`⚠️ Hook ${hook.name}: ${reason}.`);
-      return;
+      return false;
     }
     const download = await downloadForHook(message, { dir: config.paths.mediaDir, maxBytes: config.media.maxBytes, wacli });
     if (!('file' in download)) {
       const reason = 'skipped' in download ? download.skipped : download.error;
       log.warn('hook skipped', { ...fields, reason });
       await tell(`⚠️ Hook ${hook.name}: could not get the file (${reason}).`);
-      return;
+      return false;
     }
     const name = basename(download.file);
     const tools = [...(this.deps.cliServer === undefined ? [] : [this.deps.cliServer]), ...(this.deps.tools?.forBatch(home).mcp ?? [])];
@@ -295,9 +300,11 @@ export class Agent {
       );
       log.info('hook', { ...fields, file: name, cost: roundCost(cost) });
       await tell(`📎 ${name}\n${answer.trim()}`);
+      return true;
     } catch (error) {
       log.warn('hook failed', { ...fields, error: errorMessage(error), cost: roundCost(cost) });
       await tell(`⚠️ Hook ${hook.name} failed on ${name}: ${errorMessage(error)}`);
+      return false;
     } finally {
       if (config.storage.saveText) state.recordMediaFile(message.chat, message.id, download.file);
       else await rm(download.file, { force: true });
@@ -321,17 +328,22 @@ export class Agent {
     await Promise.all([...this.unreacting]);
   }
 
-  /** Decides one batch, then takes the working reaction off its commands, whatever happened. */
+  /**
+   * Decides one batch, then takes the working reaction off its commands, whatever happened, and
+   * puts the done reaction on them when the decision was carried out.
+   */
   async processBatch(batch: Batch): Promise<void> {
+    let done = false;
     try {
-      await this.decideBatch(batch);
+      done = await this.decideBatch(batch);
     } finally {
-      this.unreact(batch);
+      this.unreact(batch, done);
       for (const message of batch.messages) this.forwardTranscripts.delete(messageKey(message));
     }
   }
 
-  private async decideBatch(batch: Batch): Promise<void> {
+  /** True when the model decided and its actions were carried out. */
+  private async decideBatch(batch: Batch): Promise<boolean> {
     const { config, state, usage, log } = this.deps;
     const now = this.now();
     const invoked = batch.messages.some((message) => message.kind === 'command');
@@ -353,7 +365,7 @@ export class Agent {
         const text = `⚠️ Daily limit of ${config.engine.maxCallsPerDay} model calls reached. New messages are ignored until tomorrow.`;
         await this.execute([{ type: 'notify', text }], context, batchId);
       }
-      return;
+      return false;
     }
 
     const limit = usage.limitReached(now);
@@ -373,7 +385,7 @@ export class Agent {
           `New messages are ignored ${names.until}.`;
         await this.execute([{ type: 'notify', text }], context, batchId);
       }
-      return;
+      return false;
     }
 
     batch = await this.readMedia(batch, batchId);
@@ -406,7 +418,7 @@ export class Agent {
         await this.execute([{ type: 'notify', text: `⚠️ Could not process your command: ${errorMessage(error)}` }], context, batchId);
       }
       await this.warnNearLimits(context, batchId);
-      return;
+      return false;
     }
     this.deps.events?.onDecision?.();
     for (const warning of decision.warnings) log.warn('model answer', { chat: batch.chat, warning });
@@ -421,6 +433,7 @@ export class Agent {
     state.finishBatch(batchId, { status: 'decided', decision }, this.now());
     await this.execute(decision.actions, context, batchId);
     await this.warnNearLimits(context, batchId);
+    return true;
   }
 
   /** [routing] as it is now: changes from the home chat, or to the file, apply without a restart. */

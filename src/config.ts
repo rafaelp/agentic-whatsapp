@@ -16,6 +16,8 @@ export interface AgentConfig {
   settingsTools: boolean;
   /** Reaction put on the owner's commands while the agent works on them; empty: none. */
   workingReaction: string;
+  /** Reaction that replaces the working one once a command was handled; empty: none. */
+  doneReaction: string;
   /** Show in the stream the messages other people delete, with their text. */
   streamDeleted: boolean;
 }
@@ -282,6 +284,7 @@ export function parseConfig(
     messagePrefix: agentSection.string('message_prefix', defaultMessagePrefix(name)),
     settingsTools: agentSection.boolean('settings_tools', true),
     workingReaction: agentSection.string('working_reaction', '✨').trim(),
+    doneReaction: agentSection.string('done_reaction', '✅').trim(),
     streamDeleted: agentSection.boolean('stream_deleted', true),
   };
   agentSection.finish();
